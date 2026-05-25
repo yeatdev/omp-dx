@@ -1,0 +1,18 @@
+[submodule "server/sdk"]
+	path = server/sdk
+	url = https://github.com/openmultiplayer/open.mp-sdk
+[submodule "server/network"]
+	path = server/network
+	url = https://github.com/openmultiplayer/open.mp-network
+[submodule "server/pawn-natives"]
+	path = server/pawn-natives
+	url = https://github.com/openmultiplayer/pawn-natives
+[submodule "server/pawn"]
+	path = server/pawn
+	url = https://github.com/openmultiplayer/compiler
+[submodule "client/libs/RakHook"]
+	path = client/libs/RakHook
+	url = https://github.com/exsycore/rakhook
+[submodule "client/libs/samp-api"]
+	path = client/libs/samp-api
+	url = https://github.com/BlastHackNet/SAMP-API

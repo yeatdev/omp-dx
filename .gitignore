@@ -1,0 +1,74 @@
+# Custom robust .gitignore for omp-dx
+
+# ==================== Dependencies ====================
+server/sdk/
+server/pawn/
+server/network/
+server/pawn-natives/
+client/libs/RakHook/
+client/libs/samp-api/
+client/libs/Imgui/
+
+# ==================== Build Directories ====================
+**/build/
+**/bin/
+**/obj/
+**/out/
+**/Release/
+**/Debug/
+**/x64/
+**/x86/
+**/Win32/
+**/Win32-Debug/
+**/ipch/
+
+# ==================== Visual Studio & IDE Caches ====================
+**/.vs/
+**/.vscode/
+**/.idea/
+**/*.VC.db
+**/*.opendb
+**/*.opensdf
+**/*.sdf
+**/*.suo
+**/*.user
+**/*.userosscache
+**/*.sln.docstates
+**/UpgradeLog*.XML
+**/Backup*/
+**/_UpgradeReport_Files/
+
+# ==================== Compiled Binaries & Outputs ====================
+**/*.amx
+**/*.asi
+**/*.dll
+**/*.exe
+**/*.pdb
+**/*.ilk
+**/*.lib
+**/*.exp
+**/*.obj
+**/*.pch
+**/*.tlog
+**/*.log
+**/*.idb
+
+# ==================== Submodule / CMake / Conan Caches ====================
+**/CMakeFiles/
+**/CMakeCache.txt
+**/*.cmake
+**/*.stamp
+**/*.rule
+**/*.depend
+**/conan.lock
+**/conaninfo.txt
+**/conanbuildinfo.txt
+**/conanbuildinfo.cmake
+
+# ==================== System & Temp Files ====================
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+**/*.tmp
+**/*.temp
+*~
