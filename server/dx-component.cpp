@@ -274,8 +274,28 @@ bool DXComponent::onReceive(IPlayer& peer, NetworkBitStream& bs)
 	float h = 0.0f;
 	if (bs.readFLOAT(w) && bs.readFLOAT(h))
 	{
+		int playerId = peer.getID();
+		extern bool IsPlayerDXReady(int playerId);
+		bool wasReady = IsPlayerDXReady(playerId);
+
 		extern void SetPlayerScreenSize(int playerId, float w, float h);
-		SetPlayerScreenSize(peer.getID(), w, h);
+		SetPlayerScreenSize(playerId, w, h);
+
+		if (!wasReady)
+		{
+			auto pawnComponent = DXComponent::getInstance()->getPawnComponent();
+			if (pawnComponent)
+			{
+				for (IPawnScript* script : pawnComponent->sideScripts())
+				{
+					script->Call("OnPlayerDXReady", DefaultReturnValue_False, playerId);
+				}
+				if (auto script = pawnComponent->mainScript())
+				{
+					script->Call("OnPlayerDXReady", DefaultReturnValue_False, playerId);
+				}
+			}
+		}
 	}
 	return false;
 }

@@ -51,8 +51,10 @@ native bool:DX_DrawIcon(playerid, elementid, Float:x, Float:y, Float:size, const
 native bool:DX_PlaySound(playerid, const url[]);
 native bool:DX_GetColorPickerColor(playerid, elementid, &color);
 native bool:DX_GetScrollContainerVal(playerid, elementid, &Float:value);
+native bool:DX_IsReady(playerid);
 
 forward OnPlayerClickDX(playerid, elementid);
+forward OnPlayerDXReady(playerid);
 forward OnPlayerToggleDXCheckbox(playerid, elementid, bool:checked);
 forward OnPlayerDXInputSubmit(playerid, elementid, const text[]);
 forward OnPlayerChangeDXSlider(playerid, elementid, Float:value);

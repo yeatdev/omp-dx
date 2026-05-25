@@ -49,6 +49,16 @@ SCRIPT_API(DX_GetScreenSize, bool(IPlayer& player, float& width, float& height))
 	return false;
 }
 
+bool IsPlayerDXReady(int playerId) {
+	std::lock_guard<std::mutex> lock(g_screenSizeMutex);
+	return g_playerScreenSizes.find(playerId) != g_playerScreenSizes.end();
+}
+
+SCRIPT_API(DX_IsReady, bool(IPlayer& player))
+{
+	return IsPlayerDXReady(player.getID());
+}
+
 SCRIPT_API(DX_DrawRectangle, bool(IPlayer& player, int elementId, float x, float y, float w, float h, int color))
 {
 	SendDXRectangle(player, elementId, x, y, w, h, static_cast<uint32_t>(color));
