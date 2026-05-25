@@ -406,8 +406,9 @@ native bool:DX_GetListViewIndex(playerid, elementid, &index);
 native bool:DX_GetTabActive(playerid, elementid, &index);
 native bool:DX_GetColorPickerColor(playerid, elementid, &color);
 native bool:DX_GetScrollContainerVal(playerid, elementid, &Float:value);
+native bool:DX_IsReady(playerid);
 ```
-Various API routines to query current state metrics securely on the server side.
+Various API routines to query current state metrics and player readiness securely on the server side.
 
 ---
 
@@ -484,3 +485,10 @@ Triggered when a player selects a color on a Color Picker spectrum.
 forward OnPlayerScrollDXContainer(playerid, elementid, Float:scrollVal);
 ```
 Triggered when a player scrolls within a Scroll Container.
+
+#### OnPlayerDXReady
+```pawn
+forward OnPlayerDXReady(playerid);
+```
+Triggered when the player's client-side DirectX eklenti (ASI plugin) has successfully initialized, hooked the D3D9 renderer, and is ready to draw custom elements.
+
