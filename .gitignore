@@ -5,8 +5,6 @@ server/sdk/
 server/pawn/
 server/network/
 server/pawn-natives/
-client/libs/RakHook/
-client/libs/samp-api/
 client/libs/Imgui/
 
 # ==================== Build Directories ====================
