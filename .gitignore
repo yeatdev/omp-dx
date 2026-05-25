@@ -50,7 +50,6 @@ client/libs/Imgui/
 # ==================== Submodule / CMake / Conan Caches ====================
 **/CMakeFiles/
 **/CMakeCache.txt
-**/*.cmake
 **/*.stamp
 **/*.rule
 **/*.depend
