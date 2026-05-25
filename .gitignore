@@ -1,10 +1,6 @@
 # Custom robust .gitignore for omp-dx
 
 # ==================== Dependencies ====================
-server/sdk/
-server/pawn/
-server/network/
-server/pawn-natives/
 client/libs/Imgui/
 
 # ==================== Build Directories ====================
