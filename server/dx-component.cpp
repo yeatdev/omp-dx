@@ -11,7 +11,7 @@ StringView DXComponent::componentName() const
 
 SemanticVersion DXComponent::componentVersion() const
 {
-	return SemanticVersion(1, 0, 0, 0);
+	return SemanticVersion(0, 0, 1, 0);
 }
 
 class RPC192Handler final : public SingleNetworkInEventHandler {
