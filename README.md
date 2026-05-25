@@ -2,6 +2,14 @@
 
 A high-performance, server-authoritative 2D rendering and interactive user interface system for open.mp servers and SA-MP clients. The system consists of a server-side component (omp-dx.dll) and a client-side ASI plugin (omp-dx.asi) that communicate via custom RPCs to render dynamic, responsive, and hardware-accelerated user interfaces directly within the Direct3D9 loop.
 
+## Videos
+
+[![Video 1](https://img.youtube.com/vi/yEzTO345jnQ/maxresdefault.jpg)](https://www.youtube.com/watch?v=yEzTO345jnQ)
+
+[![Video 2](https://img.youtube.com/vi/lnRDpxthiMc/maxresdefault.jpg)](https://www.youtube.com/watch?v=lnRDpxthiMc)
+
+[![Video 3](https://img.youtube.com/vi/PePrjPJONPg/maxresdefault.jpg)](https://www.youtube.com/watch?v=PePrjPJONPg)
+
 ## Repository Structure
 
 ```text
