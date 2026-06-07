@@ -10,7 +10,7 @@ void SendDXClearAll(IPlayer& player);
 void SendDXButton(IPlayer& player, int elementId, float x, float y, float w, float h, uint32_t color, float scale, const std::string& text, const std::string& font = "");
 void SendDXCheckbox(IPlayer& player, int elementId, float x, float y, float w, float h, uint32_t color, bool checked, float scale, const std::string& label, const std::string& font = "");
 void SendDXInput(IPlayer& player, int elementId, float x, float y, float w, float h, uint32_t color, float scale, const std::string& defaultText, const std::string& placeholder, const std::string& font = "");
-void SendDXLoadFont(IPlayer& player, const std::string& fontFamily, const std::string& url);
+void SendDXLoadFont(IPlayer& player, const std::string& fontFamily, const std::string& fileName);
 void SendDXImage(IPlayer& player, int elementId, float x, float y, float w, float h, uint32_t color, const std::string& url);
 void SendDXLine(IPlayer& player, int elementId, float x1, float y1, float x2, float y2, float thickness, uint32_t color);
 void SendDXCircle(IPlayer& player, int elementId, float x, float y, float radius, uint32_t color, float thickness);

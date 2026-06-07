@@ -2,6 +2,162 @@
 #include <Server/Components/Pawn/pawn_impl.hpp>
 #include <bitstream.hpp>
 #include "dx-component.hpp"
+#include <algorithm>
+#include <chrono>
+#include <cmath>
+#include <mutex>
+#include <string>
+#include <unordered_map>
+
+void LogServerToFile(const std::string& text);
+
+namespace {
+constexpr uint16_t MaxInputLength = 1024;
+constexpr double EventRatePerSecond = 120.0;
+constexpr double EventBurst = 240.0;
+constexpr double ScreenUpdateRatePerSecond = 2.0;
+constexpr double ScreenUpdateBurst = 4.0;
+
+struct EventRateState {
+	double tokens = EventBurst;
+	std::chrono::steady_clock::time_point last = std::chrono::steady_clock::now();
+};
+
+std::mutex g_eventRateMutex;
+std::unordered_map<int, EventRateState> g_eventRates;
+std::unordered_map<uint64_t, EventRateState> g_elementEventRates;
+std::unordered_map<int, EventRateState> g_screenUpdateRates;
+
+struct RejectLogState {
+	std::chrono::steady_clock::time_point last = std::chrono::steady_clock::now() - std::chrono::seconds(10);
+	uint32_t suppressed = 0;
+};
+
+std::mutex g_rejectLogMutex;
+std::unordered_map<uint64_t, RejectLogState> g_rejectLogs;
+
+void LogRejectedDXEvent(int playerId, int elementId, uint8_t subtype, uint8_t reason)
+{
+	const auto now = std::chrono::steady_clock::now();
+	uint32_t suppressed = 0;
+	bool shouldLog = false;
+	{
+		std::lock_guard<std::mutex> lock(g_rejectLogMutex);
+		const uint64_t key = (static_cast<uint64_t>(static_cast<uint32_t>(playerId)) << 32) |
+			(static_cast<uint64_t>(reason) << 24) |
+			(static_cast<uint64_t>(subtype) << 16);
+		auto& state = g_rejectLogs[key];
+		if (std::chrono::duration_cast<std::chrono::milliseconds>(now - state.last).count() >= 1000) {
+			shouldLog = true;
+			suppressed = state.suppressed;
+			state.suppressed = 0;
+			state.last = now;
+		} else {
+			++state.suppressed;
+		}
+	}
+
+	if (!shouldLog) {
+		return;
+	}
+
+	const char* reasonText = "unknown";
+	if (reason == 1) {
+		reasonText = "global-rate-limit";
+	} else if (reason == 2) {
+		reasonText = "unknown-or-disallowed-element";
+	} else if (reason == 3) {
+		reasonText = "element-event-rate-limit";
+	}
+	LogServerToFile("Rejected DX event: player=" + std::to_string(playerId) +
+		", subtype=" + std::to_string(static_cast<int>(subtype)) +
+		", elementId=" + std::to_string(elementId) +
+		", reason=" + reasonText +
+		", suppressed=" + std::to_string(suppressed));
+}
+
+bool ConsumeEventToken(int playerId)
+{
+	std::lock_guard<std::mutex> lock(g_eventRateMutex);
+	auto& state = g_eventRates[playerId];
+	const auto now = std::chrono::steady_clock::now();
+	const double elapsed = std::chrono::duration<double>(now - state.last).count();
+	state.last = now;
+	state.tokens = std::min(EventBurst, state.tokens + elapsed * EventRatePerSecond);
+	if (state.tokens < 1.0) {
+		return false;
+	}
+	state.tokens -= 1.0;
+	return true;
+}
+
+bool ConsumeScreenUpdateToken(int playerId)
+{
+	std::lock_guard<std::mutex> lock(g_eventRateMutex);
+	auto& state = g_screenUpdateRates[playerId];
+	const auto now = std::chrono::steady_clock::now();
+	const double elapsed = std::chrono::duration<double>(now - state.last).count();
+	state.last = now;
+	state.tokens = std::min(ScreenUpdateBurst, state.tokens + elapsed * ScreenUpdateRatePerSecond);
+	if (state.tokens > ScreenUpdateBurst) {
+		state.tokens = ScreenUpdateBurst;
+	}
+	if (state.tokens < 1.0) {
+		return false;
+	}
+	state.tokens -= 1.0;
+	return true;
+}
+
+uint64_t MakeElementEventRateKey(int playerId, int elementId, uint8_t subtype)
+{
+	return (static_cast<uint64_t>(static_cast<uint16_t>(playerId)) << 48) |
+		(static_cast<uint64_t>(subtype) << 40) |
+		static_cast<uint64_t>(static_cast<uint32_t>(elementId));
+}
+
+void GetElementEventRatePolicy(uint8_t subtype, double& rate, double& burst, bool& stateful)
+{
+	stateful = false;
+	switch (subtype) {
+		case 1: rate = 5.0; burst = 10.0; return;  // button click
+		case 2: rate = 8.0; burst = 12.0; return;  // checkbox toggle
+		case 4: rate = 2.0; burst = 4.0; return;   // input submit
+		case 6:
+		case 7:
+		case 8:
+		case 11: rate = 8.0; burst = 12.0; return; // selections
+		case 10: rate = 5.0; burst = 8.0; return;  // inventory swap
+		case 5:
+		case 9:
+		case 13: stateful = true; rate = 30.0; burst = 45.0; return; // slider, drag, scroll
+		case 12: stateful = true; rate = 20.0; burst = 30.0; return; // color picker
+		default: rate = 20.0; burst = 30.0; return;
+	}
+}
+
+bool ConsumeElementEventToken(int playerId, int elementId, uint8_t subtype, bool& stateful)
+{
+	double rate = 0.0;
+	double burst = 0.0;
+	GetElementEventRatePolicy(subtype, rate, burst, stateful);
+
+	std::lock_guard<std::mutex> lock(g_eventRateMutex);
+	auto& state = g_elementEventRates[MakeElementEventRateKey(playerId, elementId, subtype)];
+	const auto now = std::chrono::steady_clock::now();
+	const double elapsed = std::chrono::duration<double>(now - state.last).count();
+	state.last = now;
+	state.tokens = std::min(burst, state.tokens + elapsed * rate);
+	if (state.tokens > burst) {
+		state.tokens = burst;
+	}
+	if (state.tokens < 1.0) {
+		return false;
+	}
+	state.tokens -= 1.0;
+	return true;
+}
+}
 
 // Required component methods.
 StringView DXComponent::componentName() const
@@ -27,6 +183,24 @@ public:
 		if (!pawnComponent) return false;
 
 		int playerId = peer.getID();
+		extern bool IsPlayerDXElementEventAllowed(int playerId, int elementId, uint8_t eventSubtype);
+		if (!ConsumeEventToken(playerId)) {
+			LogRejectedDXEvent(playerId, elementId, subtype, 1);
+			return false;
+		}
+		if (!IsPlayerDXElementEventAllowed(playerId, elementId, subtype)) {
+			LogRejectedDXEvent(playerId, elementId, subtype, 2);
+			return false;
+		}
+		bool statefulEvent = false;
+		const bool callbackAllowed = ConsumeElementEventToken(playerId, elementId, subtype, statefulEvent);
+		if (!callbackAllowed && !statefulEvent) {
+			LogRejectedDXEvent(playerId, elementId, subtype, 3);
+			return false;
+		}
+		if (!callbackAllowed) {
+			LogRejectedDXEvent(playerId, elementId, subtype, 3);
+		}
 
 		if (subtype == 1) { // Button Click
 			for (IPawnScript* script : pawnComponent->sideScripts()) {
@@ -52,12 +226,12 @@ public:
 		}
 		else if (subtype == 3) { // Input Text Change
 			uint16_t len = 0;
-			if (bs.readUINT16(len)) {
+			if (bs.readUINT16(len) && len <= MaxInputLength) {
 				std::string text;
 				if (len > 0) {
 					text.resize(len);
 					Span<uint8_t> dataSpan(reinterpret_cast<uint8_t*>(&text[0]), len);
-					bs.readArray(dataSpan);
+					if (!bs.readArray(dataSpan)) return false;
 				}
 				extern void SetPlayerDXInputText(int playerId, int elementId, const std::string& text);
 				SetPlayerDXInputText(playerId, elementId, text);
@@ -65,12 +239,12 @@ public:
 		}
 		else if (subtype == 4) { // Input Submit
 			uint16_t len = 0;
-			if (bs.readUINT16(len)) {
+			if (bs.readUINT16(len) && len <= MaxInputLength) {
 				std::string text;
 				if (len > 0) {
 					text.resize(len);
 					Span<uint8_t> dataSpan(reinterpret_cast<uint8_t*>(&text[0]), len);
-					bs.readArray(dataSpan);
+					if (!bs.readArray(dataSpan)) return false;
 				}
 				extern void SetPlayerDXInputText(int playerId, int elementId, const std::string& text);
 				SetPlayerDXInputText(playerId, elementId, text);
@@ -85,21 +259,23 @@ public:
 		}
 		else if (subtype == 5) { // Slider value change
 			float value = 0.0f;
-			if (bs.readFLOAT(value)) {
+			if (bs.readFLOAT(value) && std::isfinite(value) && value >= 0.0f && value <= 1.0f) {
 				extern void SetPlayerDXSliderValue(int playerId, int elementId, float value);
 				SetPlayerDXSliderValue(playerId, elementId, value);
 
-				for (IPawnScript* script : pawnComponent->sideScripts()) {
-					script->Call("OnPlayerChangeDXSlider", DefaultReturnValue_False, playerId, elementId, value);
-				}
-				if (auto script = pawnComponent->mainScript()) {
-					script->Call("OnPlayerChangeDXSlider", DefaultReturnValue_False, playerId, elementId, value);
+				if (callbackAllowed) {
+					for (IPawnScript* script : pawnComponent->sideScripts()) {
+						script->Call("OnPlayerChangeDXSlider", DefaultReturnValue_False, playerId, elementId, value);
+					}
+					if (auto script = pawnComponent->mainScript()) {
+						script->Call("OnPlayerChangeDXSlider", DefaultReturnValue_False, playerId, elementId, value);
+					}
 				}
 			}
 		}
 		else if (subtype == 6) { // ComboBox selection
 			int32_t index = 0;
-			if (bs.readINT32(index)) {
+			if (bs.readINT32(index) && index >= -1 && index <= 100000) {
 				extern void SetPlayerDXSelectionIndex(int playerId, int elementId, int index);
 				SetPlayerDXSelectionIndex(playerId, elementId, index);
 
@@ -113,7 +289,7 @@ public:
 		}
 		else if (subtype == 7) { // ListView selection
 			int32_t index = 0;
-			if (bs.readINT32(index)) {
+			if (bs.readINT32(index) && index >= -1 && index <= 100000) {
 				extern void SetPlayerDXSelectionIndex(int playerId, int elementId, int index);
 				SetPlayerDXSelectionIndex(playerId, elementId, index);
 
@@ -127,7 +303,7 @@ public:
 		}
 		else if (subtype == 8) { // Tab selection
 			int32_t index = 0;
-			if (bs.readINT32(index)) {
+			if (bs.readINT32(index) && index >= -1 && index <= 100000) {
 				extern void SetPlayerDXSelectionIndex(int playerId, int elementId, int index);
 				SetPlayerDXSelectionIndex(playerId, elementId, index);
 
@@ -142,18 +318,23 @@ public:
 		else if (subtype == 9) { // Drag & Drop coordinate update
 			float newX = 0.0f;
 			float newY = 0.0f;
-			if (bs.readFLOAT(newX) && bs.readFLOAT(newY)) {
-				for (IPawnScript* script : pawnComponent->sideScripts()) {
-					script->Call("OnPlayerDragDX", DefaultReturnValue_False, playerId, elementId, newX, newY);
-				}
-				if (auto script = pawnComponent->mainScript()) {
-					script->Call("OnPlayerDragDX", DefaultReturnValue_False, playerId, elementId, newX, newY);
+			if (bs.readFLOAT(newX) && bs.readFLOAT(newY) &&
+				std::isfinite(newX) && std::isfinite(newY) &&
+				std::abs(newX) <= 100000.0f && std::abs(newY) <= 100000.0f) {
+				if (callbackAllowed) {
+					for (IPawnScript* script : pawnComponent->sideScripts()) {
+						script->Call("OnPlayerDragDX", DefaultReturnValue_False, playerId, elementId, newX, newY);
+					}
+					if (auto script = pawnComponent->mainScript()) {
+						script->Call("OnPlayerDragDX", DefaultReturnValue_False, playerId, elementId, newX, newY);
+					}
 				}
 			}
 		}
 		else if (subtype == 10) { // Inventory swap
 			int32_t targetId = 0;
-			if (bs.readINT32(targetId)) {
+			if (bs.readINT32(targetId) &&
+				IsPlayerDXElementEventAllowed(playerId, targetId, subtype)) {
 				for (IPawnScript* script : pawnComponent->sideScripts()) {
 					script->Call("OnPlayerSwapDXSlots", DefaultReturnValue_False, playerId, elementId, targetId);
 				}
@@ -164,7 +345,7 @@ public:
 		}
 		else if (subtype == 11) { // Radial Select
 			int32_t index = 0;
-			if (bs.readINT32(index)) {
+			if (bs.readINT32(index) && index >= -1 && index <= 100000) {
 				extern void SetPlayerDXSelectionIndex(int playerId, int elementId, int index);
 				SetPlayerDXSelectionIndex(playerId, elementId, index);
 
@@ -182,25 +363,29 @@ public:
 				extern void SetPlayerDXColor(int playerId, int elementId, uint32_t color);
 				SetPlayerDXColor(playerId, elementId, selectedColor);
 
-				for (IPawnScript* script : pawnComponent->sideScripts()) {
-					script->Call("OnPlayerSelectDXColor", DefaultReturnValue_False, playerId, elementId, static_cast<int>(selectedColor));
-				}
-				if (auto script = pawnComponent->mainScript()) {
-					script->Call("OnPlayerSelectDXColor", DefaultReturnValue_False, playerId, elementId, static_cast<int>(selectedColor));
+				if (callbackAllowed) {
+					for (IPawnScript* script : pawnComponent->sideScripts()) {
+						script->Call("OnPlayerSelectDXColor", DefaultReturnValue_False, playerId, elementId, static_cast<int>(selectedColor));
+					}
+					if (auto script = pawnComponent->mainScript()) {
+						script->Call("OnPlayerSelectDXColor", DefaultReturnValue_False, playerId, elementId, static_cast<int>(selectedColor));
+					}
 				}
 			}
 		}
 		else if (subtype == 13) { // Scroll Container Change
 			float ratio = 0.0f;
-			if (bs.readFLOAT(ratio)) {
+			if (bs.readFLOAT(ratio) && std::isfinite(ratio) && ratio >= 0.0f && ratio <= 1.0f) {
 				extern void SetPlayerDXScrollVal(int playerId, int elementId, float value);
 				SetPlayerDXScrollVal(playerId, elementId, ratio);
 
-				for (IPawnScript* script : pawnComponent->sideScripts()) {
-					script->Call("OnPlayerScrollDXContainer", DefaultReturnValue_False, playerId, elementId, ratio);
-				}
-				if (auto script = pawnComponent->mainScript()) {
-					script->Call("OnPlayerScrollDXContainer", DefaultReturnValue_False, playerId, elementId, ratio);
+				if (callbackAllowed) {
+					for (IPawnScript* script : pawnComponent->sideScripts()) {
+						script->Call("OnPlayerScrollDXContainer", DefaultReturnValue_False, playerId, elementId, ratio);
+					}
+					if (auto script = pawnComponent->mainScript()) {
+						script->Call("OnPlayerScrollDXContainer", DefaultReturnValue_False, playerId, elementId, ratio);
+					}
 				}
 			}
 		}
@@ -262,6 +447,30 @@ void DXComponent::onPlayerConnect(IPlayer& player)
 
 void DXComponent::onPlayerDisconnect(IPlayer& player, PeerDisconnectReason reason)
 {
+	{
+		std::lock_guard<std::mutex> lock(g_eventRateMutex);
+		g_eventRates.erase(player.getID());
+		g_screenUpdateRates.erase(player.getID());
+		const uint64_t playerPrefix = static_cast<uint64_t>(static_cast<uint16_t>(player.getID())) << 48;
+		for (auto it = g_elementEventRates.begin(); it != g_elementEventRates.end(); ) {
+			if ((it->first & 0xFFFF000000000000ull) == playerPrefix) {
+				it = g_elementEventRates.erase(it);
+			} else {
+				++it;
+			}
+		}
+	}
+	{
+		std::lock_guard<std::mutex> lock(g_rejectLogMutex);
+		const uint64_t playerPrefix = static_cast<uint64_t>(static_cast<uint32_t>(player.getID())) << 32;
+		for (auto it = g_rejectLogs.begin(); it != g_rejectLogs.end(); ) {
+			if ((it->first & 0xFFFFFFFF00000000ull) == playerPrefix) {
+				it = g_rejectLogs.erase(it);
+			} else {
+				++it;
+			}
+		}
+	}
 	extern void RemovePlayerScreenSize(int playerId);
 	RemovePlayerScreenSize(player.getID());
 	extern void RemovePlayerDXStates(int playerId);
@@ -272,9 +481,14 @@ bool DXComponent::onReceive(IPlayer& peer, NetworkBitStream& bs)
 {
 	float w = 0.0f;
 	float h = 0.0f;
-	if (bs.readFLOAT(w) && bs.readFLOAT(h))
+	if (bs.readFLOAT(w) && bs.readFLOAT(h) &&
+		std::isfinite(w) && std::isfinite(h) &&
+		w >= 320.0f && w <= 16384.0f && h >= 200.0f && h <= 16384.0f)
 	{
 		int playerId = peer.getID();
+		if (!ConsumeScreenUpdateToken(playerId)) {
+			return false;
+		}
 		extern bool IsPlayerDXReady(int playerId);
 		bool wasReady = IsPlayerDXReady(playerId);
 

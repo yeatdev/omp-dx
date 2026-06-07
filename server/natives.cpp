@@ -10,8 +10,11 @@
 #include <sdk.hpp>
 #include <Server/Components/Pawn/pawn_natives.hpp>
 #include "dx-renderer.hpp"
+#include <algorithm>
+#include <cctype>
 #include <map>
 #include <mutex>
+#include <unordered_map>
 
 using namespace Impl;
 
@@ -83,8 +86,120 @@ struct DXElementState {
 	int intValue = 0;
 };
 
+struct DXElementRegistration {
+	uint8_t type = 0;
+	bool draggable = false;
+};
+
+static bool IsSafeFontToken(const std::string& value, bool allowDot) {
+	if (value.empty() || value.size() > 128) {
+		return false;
+	}
+	for (unsigned char c : value) {
+		if (std::isalnum(c) || c == '-' || c == '_' || c == ' ' || (allowDot && c == '.')) {
+			continue;
+		}
+		return false;
+	}
+	return value != "." && value != ".." && value.find("..") == std::string::npos;
+}
+
+static bool IsSafeBundledFontRequest(const std::string& fontFamily, const std::string& fileName) {
+	if (!IsSafeFontToken(fontFamily, false) || !IsSafeFontToken(fileName, true)) {
+		return false;
+	}
+	std::string extension;
+	const std::size_t dot = fileName.find_last_of('.');
+	if (dot != std::string::npos) {
+		extension = fileName.substr(dot);
+	}
+	std::transform(extension.begin(), extension.end(), extension.begin(),
+		[](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+	return extension == ".ttf" || extension == ".otf";
+}
+
 static std::map<int, std::map<int, DXElementState>> g_playerDXElementStates;
 static std::mutex g_dxElementStatesMutex;
+static std::unordered_map<int, std::unordered_map<int, DXElementRegistration>> g_playerDXElements;
+static constexpr std::size_t MaxElementsPerPlayer = 4096;
+
+bool RegisterPlayerDXElement(int playerId, int elementId, uint8_t elementType) {
+	std::lock_guard<std::mutex> lock(g_dxElementStatesMutex);
+	auto& elements = g_playerDXElements[playerId];
+	auto it = elements.find(elementId);
+	if (it != elements.end()) {
+		it->second.type = elementType;
+		return true;
+	}
+	if (elements.size() >= MaxElementsPerPlayer) {
+		return false;
+	}
+	elements[elementId] = DXElementRegistration { elementType, false };
+	return true;
+}
+
+void UnregisterPlayerDXElement(int playerId, int elementId) {
+	std::lock_guard<std::mutex> lock(g_dxElementStatesMutex);
+	auto player = g_playerDXElements.find(playerId);
+	if (player != g_playerDXElements.end()) {
+		player->second.erase(elementId);
+	}
+	auto states = g_playerDXElementStates.find(playerId);
+	if (states != g_playerDXElementStates.end()) {
+		states->second.erase(elementId);
+	}
+}
+
+void ClearPlayerDXElements(int playerId) {
+	std::lock_guard<std::mutex> lock(g_dxElementStatesMutex);
+	g_playerDXElements.erase(playerId);
+	g_playerDXElementStates.erase(playerId);
+}
+
+bool IsPlayerDXElementEventAllowed(int playerId, int elementId, uint8_t eventSubtype) {
+	std::lock_guard<std::mutex> lock(g_dxElementStatesMutex);
+	auto player = g_playerDXElements.find(playerId);
+	if (player == g_playerDXElements.end()) {
+		return false;
+	}
+	auto element = player->second.find(elementId);
+	if (element == player->second.end()) {
+		return false;
+	}
+
+	const DXElementRegistration& registration = element->second;
+	const uint8_t type = registration.type;
+	switch (eventSubtype) {
+		case 1: return type == 5;
+		case 2: return type == 6;
+		case 3:
+		case 4: return type == 7;
+		case 5: return type == 16;
+		case 6: return type == 17;
+		case 7: return type == 18;
+		case 8: return type == 19;
+		case 9: return registration.draggable;
+		case 10: return type == 28;
+		case 11: return type == 30;
+		case 12: return type == 32;
+		case 13: return type == 33;
+		default: return false;
+	}
+}
+
+bool SetPlayerDXElementDraggable(int playerId, int elementId, bool draggable) {
+	std::lock_guard<std::mutex> lock(g_dxElementStatesMutex);
+	auto player = g_playerDXElements.find(playerId);
+	if (player == g_playerDXElements.end()) {
+		return false;
+	}
+	auto element = player->second.find(elementId);
+	if (element == player->second.end()) {
+		return false;
+	}
+	element->second.draggable = draggable;
+	return true;
+}
 
 void SetPlayerDXCheckboxState(int playerId, int elementId, bool checked) {
 	std::lock_guard<std::mutex> lock(g_dxElementStatesMutex);
@@ -99,6 +214,7 @@ void SetPlayerDXInputText(int playerId, int elementId, const std::string& text) 
 void RemovePlayerDXStates(int playerId) {
 	std::lock_guard<std::mutex> lock(g_dxElementStatesMutex);
 	g_playerDXElementStates.erase(playerId);
+	g_playerDXElements.erase(playerId);
 }
 
 void SetPlayerDXSliderValue(int playerId, int elementId, float value) {
@@ -131,23 +247,29 @@ cell AMX_NATIVE_CALL DX_LoadFont_Native(AMX* amx, const cell* params)
 	if (amx_StrLen(addrFamily, &lenFamily) != AMX_ERR_NONE) return 0;
 	std::string fontFamily;
 	if (lenFamily > 0) {
-		fontFamily.resize(lenFamily);
+		fontFamily.resize(lenFamily + 1);
 		amx_GetString(&fontFamily[0], addrFamily, 0, lenFamily + 1);
+		fontFamily.resize(lenFamily);
 	}
 
-	cell* addrUrl = nullptr;
-	if (amx_GetAddr(amx, params[3], &addrUrl) != AMX_ERR_NONE) return 0;
-	int lenUrl = 0;
-	if (amx_StrLen(addrUrl, &lenUrl) != AMX_ERR_NONE) return 0;
-	std::string url;
-	if (lenUrl > 0) {
-		url.resize(lenUrl);
-		amx_GetString(&url[0], addrUrl, 0, lenUrl + 1);
+	cell* addrFileName = nullptr;
+	if (amx_GetAddr(amx, params[3], &addrFileName) != AMX_ERR_NONE) return 0;
+	int lenFileName = 0;
+	if (amx_StrLen(addrFileName, &lenFileName) != AMX_ERR_NONE) return 0;
+	std::string fileName;
+	if (lenFileName > 0) {
+		fileName.resize(lenFileName + 1);
+		amx_GetString(&fileName[0], addrFileName, 0, lenFileName + 1);
+		fileName.resize(lenFileName);
+	}
+
+	if (!IsSafeBundledFontRequest(fontFamily, fileName)) {
+		return 0;
 	}
 
 	IPlayer* player = getAmxLookups()->players->get(playerId);
 	if (player) {
-		SendDXLoadFont(*player, fontFamily, url);
+		SendDXLoadFont(*player, fontFamily, fileName);
 		return 1;
 	}
 	return 0;

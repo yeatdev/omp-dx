@@ -14,7 +14,7 @@ native bool:DX_DrawCheckbox(playerid, elementid, Float:x, Float:y, Float:w, Floa
 native bool:DX_DrawInput(playerid, elementid, Float:x, Float:y, Float:w, Float:h, color, Float:scale, const defaultText[], const placeholder[], const font[] = "");
 native bool:DX_GetCheckboxState(playerid, elementid, &bool:checked);
 native bool:DX_GetInputText(playerid, elementid, text[], len = sizeof(text));
-native bool:DX_LoadFont(playerid, const fontFamily[], const url[]);
+native bool:DX_LoadFont(playerid, const fontFamily[], const fileName[]);
 native bool:DX_DrawImage(playerid, elementid, const url[], Float:x, Float:y, Float:w, Float:h, color = 0xFFFFFFFF);
 native bool:DX_DrawLine(playerid, elementid, Float:x1, Float:y1, Float:x2, Float:y2, Float:thickness, color);
 native bool:DX_DrawCircle(playerid, elementid, Float:x, Float:y, Float:radius, color, Float:thickness = 0.0);

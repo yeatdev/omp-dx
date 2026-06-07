@@ -2,6 +2,7 @@ cmake_minimum_required(VERSION 3.19)
 project(omp-dx LANGUAGES C CXX VERSION 0.0.1)
 
 set(CMAKE_CXX_STANDARD 17)
+find_package(Threads REQUIRED)
 
 add_subdirectory(sdk)
 add_subdirectory(network)
@@ -27,5 +28,6 @@ add_library(${PROJECT_NAME} SHARED
 target_link_libraries(${PROJECT_NAME} PRIVATE
     OMP-SDK
     OMP-Network
+    Threads::Threads
 )
 
