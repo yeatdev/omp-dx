@@ -82,6 +82,7 @@ The client component hooks the Direct3D9 device context and intercepts input win
   4. The compiled plugin will be located at `client/bin/Release/omp-dx.asi`.
 * **Deployment:**
   * Copy `omp-dx.asi` into the Grand Theft Auto: San Andreas root directory.
+  * Copy the generated `omp-dx/` folder next to the ASI. By default it contains bundled fonts in `omp-dx/fonts/`.
   * Ensure a working ASI Loader (e.g., `vorbisFile.dll`) is installed in the game client directory.
 
 ### 2. Server-Side Component (`omp-dx.dll`)
@@ -143,7 +144,7 @@ Once the `test_dx` filterscript is loaded on your open.mp server, the following 
 * **Parent-Child Hierarchy**: Supports logical grouping where child widgets inherit parent transforms. When a parent element is dragged or animated, all child elements are updated client-side instantly with zero network delay and zero CPU overhead.
 * **Direct3D9 Device Reset Resilience**: Handles transitions such as Alt-Tab window toggling, resolution modifications, and graphic settings adjustments without visual degradation. Direct3D9 texture surfaces are safely cleared and re-created while font references remain persistently registered in memory, preventing the common "square box" font placeholder bug.
 * **Hardware-Accelerated Effects**: Supports high-performance features including multi-layered dropshadows, single-pass circular progress indicators, and pixel-shader based background blur (glassmorphism) rendered directly within the D3D9 viewport.
-* **Dynamic Font and Vector Asset Loading**: Supports dynamic runtime font registration over HTTP. The server can stream `.ttf` font files to the client, which registers them process-wide. This enables crisp vector rendering of icons (e.g., FontAwesome) or custom typography without modifying client game archives.
+* **Bundled Font and Vector Asset Loading**: Supports safe runtime registration of pre-installed `.ttf`/`.otf` files from the client-side `omp-dx/fonts/` folder. Servers request a font by family name and local file name; arbitrary remote font downloads are intentionally blocked.
 * **Robust Input Handler**: Windows message loop hook (WndProc) coordinates and scales mouse operations, accounting for OS DPI scaling offsets and windowed mode resolution adjustments to ensure pixel-perfect hover and click detections.
 * **Integrated Audio Manager**: Asynchronously downloads, caches, and plays audio resources over HTTP using a multi-channel overlapping sound player, providing sub-second execution times and minimizing network re-downloads.
 * **Network RPC Throttling**: Interactive UI transitions (such as sliders and drags) are computed locally at the client’s display rate (up to 1000Hz+), while state synchronization packets sent to the server are throttled to a maximum of 60Hz, preventing packet congestion and jitter.
@@ -339,11 +340,42 @@ Removes all active UI elements for a player.
 
 #### DX_LoadFont
 ```pawn
-native bool:DX_LoadFont(playerid, const fontFamily[], const url[]);
+native bool:DX_LoadFont(playerid, const fontFamily[], const fileName[]);
 ```
-Downloads a TrueType Font (.ttf) from a URL and registers it process-wide in the client's OS for safe, high-fidelity rendering.
-* `fontFamily`: Unique family name identifier to bind the font to (e.g., `"Comfortaa"`).
-* `url`: Direct HTTP web link hosting the `.ttf` file.
+Registers a `.ttf` or `.otf` font. The server first looks for `fileName` in `fonts/`, `omp-dx/fonts/`, then `components/omp-dx/fonts/` on the server and transfers it to the client cache with size/checksum validation. If it is not present server-side, the client falls back to its bundled `omp-dx/fonts/` folder. `FontAwesome`, `Outfit`, `Poppins`, and `JetBrains Mono` are bundled and loaded by default.
+* `fontFamily`: Family name used later in draw calls (e.g., `"Outfit"`).
+* `fileName`: Safe file name only, such as `"Outfit.ttf"`. Paths, `..`, URLs, and unsupported extensions are rejected.
+* Security: the client only accepts fonts whose SHA-256, family, and file name are listed in `omp-dx/fonts/font-allowlist.txt`.
+
+Example:
+```pawn
+DX_LoadFont(playerid, "Outfit", "Outfit.ttf");
+DX_DrawText(playerid, 10, "Hello", 320.0, 180.0, -1, 1.0, "Outfit");
+```
+
+For server-provided fonts, place the file on the server, for example:
+```text
+open.mp server/
+  fonts/
+    MyFont.ttf
+```
+
+Then call:
+```pawn
+DX_LoadFont(playerid, "MyFont", "MyFont.ttf");
+```
+
+The client allowlist format is:
+```text
+SHA256|FontFamily|FileName
+```
+
+For example:
+```text
+FC7287273E66929776E2BA54F144FE699080BEC29F61BF649D70D871468AEADE|Outfit|Outfit.ttf
+```
+
+If a server needs a new font, add the font file to the server, compute its SHA-256, add the matching line to `client/omp-dx/fonts/font-allowlist.txt`, and ship the updated `omp-dx/fonts/font-allowlist.txt` with the client plugin. Fonts missing from this manifest are rejected by default; users can request new entries through an issue.
 
 #### DX_PlaySound
 ```pawn
