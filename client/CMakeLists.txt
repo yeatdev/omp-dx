@@ -6,6 +6,8 @@ set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${PROJECT_SOURCE_DIR}/bin)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+find_package(Threads REQUIRED)
+option(OMP_DX_DEBUG_SPAM_TEST "Enable F10 client-side random DX event spam test." OFF)
 
 add_compile_definitions(__BITSTREAM_NATIVE_END)
 
@@ -28,4 +30,13 @@ set_target_properties(${PROJECT_NAME}
 	SUFFIX ".asi"
 )
 target_compile_features(${PROJECT_NAME} PUBLIC cxx_std_20)
-target_link_libraries(${PROJECT_NAME} PUBLIC d3d9 minhook rakhook sampapi)
+if(OMP_DX_DEBUG_SPAM_TEST)
+	target_compile_definitions(${PROJECT_NAME} PRIVATE OMP_DX_DEBUG_SPAM_TEST)
+endif()
+target_link_libraries(${PROJECT_NAME} PUBLIC d3d9 bcrypt minhook rakhook sampapi Threads::Threads)
+
+add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
+	COMMAND ${CMAKE_COMMAND} -E copy_directory
+		"${PROJECT_SOURCE_DIR}/omp-dx"
+		"$<TARGET_FILE_DIR:${PROJECT_NAME}>/omp-dx"
+)

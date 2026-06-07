@@ -6,6 +6,7 @@
 #include <iostream>
 #include <vector>
 #include <map>
+#include <set>
 #include <string>
 #include <mutex>
 
@@ -128,16 +129,18 @@ struct DXElement {
 	float contentHeight = 0.0f;
 };
 
-struct DXFont {
-	IDirect3DTexture9* texture = nullptr;
-	float charWidths[256] = { 0 };
-	float charHeight = 32.0f;
-};
-
 struct DXImageTexture {
 	IDirect3DTexture9* texture = nullptr;
 	int width = 0;
 	int height = 0;
+};
+
+struct DXFont {
+	IDirect3DTexture9* texture = nullptr;
+	float charWidths[256] = { 0 };
+	float charHeight = 32.0f;
+	std::map<uint32_t, DXImageTexture> glyphs;
+	std::map<uint32_t, float> glyphWidths;
 };
 
 // Thread-safe collection of DX elements and fonts

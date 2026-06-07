@@ -1,4 +1,5 @@
 #include "Plugin.h"
+#include "AsyncLogger.h"
 
 #include <sampapi/CChat.h>
 #include <RakNet/PacketEnumerations.h>
@@ -8,15 +9,22 @@
 #include <fstream>
 #include <iomanip>
 #include <sstream>
+#include <algorithm>
+#include <cctype>
+#include <cmath>
+#include <array>
+#include <atomic>
+#include <thread>
 
 namespace samp = sampapi::v03dl;
+
+#include <bcrypt.h>
+#pragma comment(lib, "bcrypt.lib")
 
 _Present oPresent = nullptr;
 _Reset oReset = nullptr;
 
 bool g_bwasInitialized = false;
-DWORD procID;
-HANDLE handle;
 HWND hWnd;
 
 float g_screenWidth = 0.0f;
@@ -41,6 +49,7 @@ int g_activeColorPickerDragId = -1;
 std::map<std::string, DXFont> g_dxFonts;
 std::mutex g_fontMutex;
 std::vector<std::string> g_loadedFontPaths;
+std::set<std::string> g_loadedFontFamilies;
 
 #include <wininet.h>
 #pragma comment(lib, "wininet.lib")
@@ -62,7 +71,54 @@ DWORD ModulateAlpha(DWORD color, float multiplier);
 void CleanupBlurTextures();
 DWORD GetHueColor(float rx);
 
+std::string GetClientBaseDirectory() {
+	char modulePath[MAX_PATH] {};
+	HMODULE module = nullptr;
+	if (GetModuleHandleExA(
+		GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+		reinterpret_cast<LPCSTR>(&GetClientBaseDirectory),
+		&module) != 0 &&
+		GetModuleFileNameA(module, modulePath, static_cast<DWORD>(sizeof(modulePath))) != 0) {
+		std::string path(modulePath);
+		const std::size_t slash = path.find_last_of("\\/");
+		if (slash != std::string::npos) {
+			return path.substr(0, slash);
+		}
+	}
+
+	char currentDir[MAX_PATH] {};
+	if (GetCurrentDirectoryA(static_cast<DWORD>(sizeof(currentDir)), currentDir) != 0) {
+		return std::string(currentDir);
+	}
+	return ".";
+}
+
+std::string ClientPath(const std::string& relativePath) {
+	return GetClientBaseDirectory() + "\\" + relativePath;
+}
+
+std::string ClientDataPath(const std::string& relativePath) {
+	return ClientPath("omp-dx\\" + relativePath);
+}
+
+bool EnsureClientDataSubdir(const char* subdir) {
+	const std::string root = ClientPath("omp-dx");
+	CreateDirectoryA(root.c_str(), nullptr);
+	if (subdir == nullptr || subdir[0] == '\0') {
+		return true;
+	}
+	const std::string child = root + "\\" + subdir;
+	CreateDirectoryA(child.c_str(), nullptr);
+	const DWORD attr = GetFileAttributesA(child.c_str());
+	return attr != INVALID_FILE_ATTRIBUTES && (attr & FILE_ATTRIBUTE_DIRECTORY);
+}
+
 bool DownloadFileWinINet(const std::string& url, const std::string& localPath) {
+	static constexpr std::size_t MaxDownloadBytes = 16 * 1024 * 1024;
+	if (url.rfind("https://", 0) != 0) {
+		LogToFile("DownloadFileWinINet: Rejected non-HTTPS URL.");
+		return false;
+	}
 	LogToFile("DownloadFileWinINet: Starting download from: " + url + " to: " + localPath);
 	HINTERNET hSession = InternetOpenA("Mozilla/5.0 (Windows NT 10.0; Win64; x64) omp-dx/1.0", INTERNET_OPEN_TYPE_PRECONFIG, NULL, NULL, 0);
 	if (!hSession) {
@@ -87,8 +143,25 @@ bool DownloadFileWinINet(const std::string& url, const std::string& localPath) {
 
 	char buffer[8192];
 	DWORD bytesRead = 0;
+	std::size_t totalBytes = 0;
 	while (InternetReadFile(hUrl, buffer, sizeof(buffer), &bytesRead) && bytesRead > 0) {
+		totalBytes += bytesRead;
+		if (totalBytes > MaxDownloadBytes) {
+			LogToFile("DownloadFileWinINet: Download exceeded size limit.");
+			outFile.close();
+			InternetCloseHandle(hUrl);
+			InternetCloseHandle(hSession);
+			DeleteFileA(localPath.c_str());
+			return false;
+		}
 		outFile.write(buffer, bytesRead);
+		if (!outFile.good()) {
+			outFile.close();
+			InternetCloseHandle(hUrl);
+			InternetCloseHandle(hSession);
+			DeleteFileA(localPath.c_str());
+			return false;
+		}
 	}
 
 	outFile.close();
@@ -110,16 +183,22 @@ struct FontVertex {
 };
 
 void LogToFile(const std::string& text) {
-	static std::mutex logMutex;
-	std::lock_guard<std::mutex> lock(logMutex);
-	std::ofstream logFile("dx_client_log.txt", std::ios::app);
-	if (logFile.is_open()) {
-		SYSTEMTIME lt;
-		GetLocalTime(&lt);
-		char timeStr[64];
-		sprintf_s(timeStr, "[%02d:%02d:%02d.%03d] ", lt.wHour, lt.wMinute, lt.wSecond, lt.wMilliseconds);
-		logFile << timeStr << text << std::endl;
+	static AsyncLogger logger(ClientPath("dx_client_log.txt").c_str());
+	logger.log(text);
+}
+
+bool ReadBoundedString(RakNet::BitStream* bs, std::string& output, uint16_t maxLength, bool allowEmpty = true) {
+	uint16_t length = 0;
+	if (!bs->Read(length) || length > maxLength || (!allowEmpty && length == 0) ||
+		bs->GetNumberOfUnreadBits() < static_cast<int>(length) * 8) {
+		return false;
 	}
+	output.clear();
+	if (length == 0) {
+		return true;
+	}
+	output.resize(length);
+	return bs->Read(output.data(), length);
 }
 
 void ReleaseFontTextures() {
@@ -129,6 +208,11 @@ void ReleaseFontTextures() {
 		if (font.texture) {
 			font.texture->Release();
 		}
+		for (auto& [codepoint, glyph] : font.glyphs) {
+			if (glyph.texture) {
+				glyph.texture->Release();
+			}
+		}
 	}
 	g_dxFonts.clear();
 	LogToFile("All font textures released.");
@@ -136,12 +220,246 @@ void ReleaseFontTextures() {
 
 void UnregisterFontResources() {
 	LogToFile("UnregisterFontResources called.");
+	std::lock_guard<std::mutex> lock(g_fontMutex);
 	for (const auto& path : g_loadedFontPaths) {
 		RemoveFontResourceExA(path.c_str(), FR_PRIVATE, NULL);
 		LogToFile("Removed font resource from Windows: " + path);
 	}
 	g_loadedFontPaths.clear();
+	g_loadedFontFamilies.clear();
 	LogToFile("All Windows font resources unregistered.");
+}
+
+bool IsSafeFontToken(const std::string& value, bool allowDot) {
+	if (value.empty() || value.size() > 128) {
+		return false;
+	}
+	for (unsigned char c : value) {
+		if (std::isalnum(c) || c == '-' || c == '_' || c == ' ' || (allowDot && c == '.')) {
+			continue;
+		}
+		return false;
+	}
+	return value != "." && value != "..";
+}
+
+std::string ToLowerAscii(std::string value) {
+	std::transform(value.begin(), value.end(), value.begin(),
+		[](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+	return value;
+}
+
+bool ComputeSHA256(const uint8_t* data, std::size_t size, std::string& outHex) {
+	BCRYPT_ALG_HANDLE algorithm = nullptr;
+	BCRYPT_HASH_HANDLE hash = nullptr;
+	DWORD objectLength = 0;
+	DWORD resultLength = 0;
+	std::vector<uint8_t> hashObject;
+	std::array<uint8_t, 32> digest {};
+
+	if (BCryptOpenAlgorithmProvider(&algorithm, BCRYPT_SHA256_ALGORITHM, nullptr, 0) != 0) {
+		return false;
+	}
+	if (BCryptGetProperty(algorithm, BCRYPT_OBJECT_LENGTH, reinterpret_cast<PUCHAR>(&objectLength),
+		sizeof(objectLength), &resultLength, 0) != 0) {
+		BCryptCloseAlgorithmProvider(algorithm, 0);
+		return false;
+	}
+	hashObject.resize(objectLength);
+	if (BCryptCreateHash(algorithm, &hash, hashObject.data(), objectLength, nullptr, 0, 0) != 0) {
+		BCryptCloseAlgorithmProvider(algorithm, 0);
+		return false;
+	}
+	const NTSTATUS hashStatus = BCryptHashData(hash, const_cast<PUCHAR>(data), static_cast<ULONG>(size), 0);
+	const NTSTATUS finishStatus = BCryptFinishHash(hash, digest.data(), static_cast<ULONG>(digest.size()), 0);
+	BCryptDestroyHash(hash);
+	BCryptCloseAlgorithmProvider(algorithm, 0);
+	if (hashStatus != 0 || finishStatus != 0) {
+		return false;
+	}
+
+	static constexpr char Hex[] = "0123456789abcdef";
+	outHex.clear();
+	outHex.reserve(digest.size() * 2);
+	for (uint8_t byte : digest) {
+		outHex.push_back(Hex[byte >> 4]);
+		outHex.push_back(Hex[byte & 0x0F]);
+	}
+	return true;
+}
+
+bool LoadFileBytes(const std::string& path, std::vector<uint8_t>& outData) {
+	std::ifstream file(path, std::ios::binary | std::ios::ate);
+	if (!file.is_open()) {
+		return false;
+	}
+	const std::streamoff size = file.tellg();
+	if (size <= 0 || size > 8 * 1024 * 1024) {
+		return false;
+	}
+	outData.resize(static_cast<std::size_t>(size));
+	file.seekg(0, std::ios::beg);
+	return static_cast<bool>(file.read(reinterpret_cast<char*>(outData.data()), size));
+}
+
+bool IsFontAllowed(const std::string& fontFamily, const std::string& fileName, const std::string& sha256Hex) {
+	const std::string manifestPath = ClientDataPath("fonts\\font-allowlist.txt");
+	std::ifstream manifest(manifestPath);
+	if (!manifest.is_open()) {
+		LogToFile("Font allowlist missing: " + manifestPath);
+		return false;
+	}
+
+	const std::string wantedHash = ToLowerAscii(sha256Hex);
+	const std::string wantedFamily = ToLowerAscii(fontFamily);
+	const std::string wantedFile = ToLowerAscii(fileName);
+	std::string line;
+	while (std::getline(manifest, line)) {
+		if (line.empty() || line[0] == '#') {
+			continue;
+		}
+		const std::size_t first = line.find('|');
+		const std::size_t second = first == std::string::npos ? std::string::npos : line.find('|', first + 1);
+		if (first == std::string::npos || second == std::string::npos) {
+			continue;
+		}
+		const std::string hash = ToLowerAscii(line.substr(0, first));
+		const std::string family = ToLowerAscii(line.substr(first + 1, second - first - 1));
+		const std::string file = ToLowerAscii(line.substr(second + 1));
+		if (hash == wantedHash && family == wantedFamily && file == wantedFile) {
+			return true;
+		}
+	}
+
+	LogToFile("Font allowlist rejected: family=" + fontFamily + ", file=" + fileName + ", sha256=" + wantedHash);
+	return false;
+}
+
+bool RegisterFontFile(const std::string& fontFamily, const std::string& localPath) {
+	std::lock_guard<std::mutex> lock(g_fontMutex);
+	if (g_loadedFontFamilies.find(fontFamily) != g_loadedFontFamilies.end()) {
+		return true;
+	}
+	if (AddFontResourceExA(localPath.c_str(), FR_PRIVATE, nullptr) == 0) {
+		LogToFile("RegisterFontFile: Windows rejected font: " + localPath);
+		return false;
+	}
+
+	g_loadedFontPaths.push_back(localPath);
+	g_loadedFontFamilies.insert(fontFamily);
+	auto texture = g_dxFonts.find(fontFamily);
+	if (texture != g_dxFonts.end()) {
+		if (texture->second.texture) {
+			texture->second.texture->Release();
+		}
+		g_dxFonts.erase(texture);
+	}
+	return true;
+}
+
+bool LoadBundledFont(const std::string& fontFamily, const std::string& fileName, bool logMissing = true) {
+	static constexpr DWORD MinFontBytes = 1024;
+	static constexpr DWORD MaxFontBytes = 8 * 1024 * 1024;
+
+	if (!IsSafeFontToken(fontFamily, false) || !IsSafeFontToken(fileName, true) ||
+		fileName.find("..") != std::string::npos) {
+		LogToFile("LoadBundledFont: Rejected unsafe font name.");
+		return false;
+	}
+
+	const std::size_t dot = fileName.find_last_of('.');
+	if (dot == std::string::npos) {
+		LogToFile("LoadBundledFont: Rejected file without extension.");
+		return false;
+	}
+	std::string extension = fileName.substr(dot);
+	std::transform(extension.begin(), extension.end(), extension.begin(),
+		[](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+	if (extension != ".ttf" && extension != ".otf") {
+		LogToFile("LoadBundledFont: Rejected unsupported extension.");
+		return false;
+	}
+
+	const std::string localPath = ClientDataPath("fonts\\" + fileName);
+	std::vector<uint8_t> fontData;
+	if (!LoadFileBytes(localPath, fontData)) {
+		if (logMissing) {
+			LogToFile("LoadBundledFont: File not found: " + localPath);
+		}
+		return false;
+	}
+	if (fontData.size() < MinFontBytes || fontData.size() > MaxFontBytes) {
+		LogToFile("LoadBundledFont: Rejected invalid file size: " + std::to_string(fontData.size()));
+		return false;
+	}
+
+	std::string sha256Hex;
+	if (!ComputeSHA256(fontData.data(), fontData.size(), sha256Hex) ||
+		!IsFontAllowed(fontFamily, fileName, sha256Hex)) {
+		LogToFile("LoadBundledFont: Rejected by allowlist: " + fileName);
+		return false;
+	}
+
+	if (!RegisterFontFile(fontFamily, localPath)) {
+		return false;
+	}
+	LogToFile("LoadBundledFont: Registered " + fontFamily + " from " + fileName);
+	return true;
+}
+
+uint32_t HashBytesFNV1a(const uint8_t* data, std::size_t size) {
+	uint32_t hash = 2166136261u;
+	for (std::size_t i = 0; i < size; ++i) {
+		hash ^= data[i];
+		hash *= 16777619u;
+	}
+	return hash;
+}
+
+bool LoadTransferredFont(const std::string& fontFamily, const std::string& fileName, const std::vector<uint8_t>& data, uint32_t expectedHash) {
+	static constexpr std::size_t MinFontBytes = 1024;
+	static constexpr std::size_t MaxFontBytes = 8 * 1024 * 1024;
+
+	if (!IsSafeFontToken(fontFamily, false) || !IsSafeFontToken(fileName, true) ||
+		fileName.find("..") != std::string::npos ||
+		data.size() < MinFontBytes || data.size() > MaxFontBytes) {
+		LogToFile("LoadTransferredFont: Rejected unsafe font transfer.");
+		return false;
+	}
+
+	const uint32_t actualHash = HashBytesFNV1a(data.data(), data.size());
+	if (actualHash != expectedHash) {
+		LogToFile("LoadTransferredFont: Checksum mismatch.");
+		return false;
+	}
+	std::string sha256Hex;
+	if (!ComputeSHA256(data.data(), data.size(), sha256Hex) ||
+		!IsFontAllowed(fontFamily, fileName, sha256Hex)) {
+		LogToFile("LoadTransferredFont: Rejected by allowlist: " + fileName);
+		return false;
+	}
+
+	if (!EnsureClientDataSubdir("fonts")) {
+		LogToFile("LoadTransferredFont: Failed to create font cache directory.");
+		return false;
+	}
+	const std::string cachedName = "server_" + std::to_string(actualHash) + "_" + fileName;
+	const std::string localPath = ClientDataPath("fonts\\" + cachedName);
+
+	std::ofstream file(localPath, std::ios::binary | std::ios::trunc);
+	if (!file.is_open()) {
+		LogToFile("LoadTransferredFont: Failed to create cache file.");
+		return false;
+	}
+	file.write(reinterpret_cast<const char*>(data.data()), data.size());
+	file.close();
+	if (!file.good()) {
+		DeleteFileA(localPath.c_str());
+		LogToFile("LoadTransferredFont: Failed to write cache file.");
+		return false;
+	}
+
+	return RegisterFontFile(fontFamily, localPath);
 }
 
 void CleanupImageTextures() {
@@ -234,7 +552,7 @@ const DXImageTexture* GetImageOrCreate(IDirect3DDevice9* pDevice, const std::str
 	std::string localPath;
 	if (pathOrUrl.rfind("http://", 0) == 0 || pathOrUrl.rfind("https://", 0) == 0) {
 		unsigned int hash = FNVHash(pathOrUrl);
-		localPath = "omp-dx\\images\\" + std::to_string(hash) + ".dat";
+		localPath = ClientDataPath("images\\" + std::to_string(hash) + ".dat");
 	} else {
 		localPath = pathOrUrl;
 	}
@@ -242,8 +560,7 @@ const DXImageTexture* GetImageOrCreate(IDirect3DDevice9* pDevice, const std::str
 	DWORD fileAttr = GetFileAttributesA(localPath.c_str());
 	if (fileAttr == INVALID_FILE_ATTRIBUTES || (fileAttr & FILE_ATTRIBUTE_DIRECTORY)) {
 		if (pathOrUrl.rfind("http://", 0) == 0 || pathOrUrl.rfind("https://", 0) == 0) {
-			CreateDirectoryA("omp-dx", NULL);
-			CreateDirectoryA("omp-dx\\images", NULL);
+			EnsureClientDataSubdir("images");
 			static std::map<std::string, bool> downloadingImages;
 			static std::mutex downloadingMutex;
 			std::lock_guard<std::mutex> dlLock(downloadingMutex);
@@ -513,7 +830,7 @@ void DrawDXInventorySlot(IDirect3DDevice9* pDevice, float x, float y, float w, f
 	// Draw Label
 	if (!label.empty()) {
 		void DrawDXText(IDirect3DDevice9* pDevice, const std::string& text, float x, float y, DWORD color, float scale, const std::string& fontName);
-		DrawDXText(pDevice, label, x + 5.0f, y + h - 18.0f, ModulateAlpha(0xFF8E8E93, multiplier), 0.45f, "Outfit-Bold");
+		DrawDXText(pDevice, label, x + 5.0f, y + h - 18.0f, ModulateAlpha(0xFF8E8E93, multiplier), 0.45f, "Outfit");
 	}
 
 	// Draw Amount Badge (if > 1)
@@ -527,7 +844,7 @@ void DrawDXInventorySlot(IDirect3DDevice9* pDevice, float x, float y, float w, f
 		std::string amtStr = std::to_string(amount);
 		void DrawDXText(IDirect3DDevice9* pDevice, const std::string& text, float x, float y, DWORD color, float scale, const std::string& fontName);
 		float textScale = 0.4f;
-		DrawDXText(pDevice, amtStr, bx + 3.0f, by + 1.0f, ModulateAlpha(0xFFFFFFFF, multiplier), textScale, "Outfit-Bold");
+		DrawDXText(pDevice, amtStr, bx + 3.0f, by + 1.0f, ModulateAlpha(0xFFFFFFFF, multiplier), textScale, "Outfit");
 	}
 }
 
@@ -657,9 +974,9 @@ void DrawDXRadialMenu(IDirect3DDevice9* pDevice, float x, float y, float radius,
 		if (i < (int)icons.size() && !icons[i].empty()) {
 			void DrawDXImage(IDirect3DDevice9* pDevice, float x, float y, float w, float h, DWORD color, const std::string& pathOrUrl);
 			DrawDXImage(pDevice, tx - 12.0f, ty - 18.0f, 24.0f, 24.0f, ModulateAlpha(0xFFFFFFFF, multiplier), icons[i]);
-			DrawDXText(pDevice, items[i], tx - 20.0f, ty + 10.0f, ModulateAlpha(textCol, multiplier), textScale, "Outfit-Bold");
+			DrawDXText(pDevice, items[i], tx - 20.0f, ty + 10.0f, ModulateAlpha(textCol, multiplier), textScale, "Outfit");
 		} else {
-			DrawDXText(pDevice, items[i], tx - 20.0f, ty - 5.0f, ModulateAlpha(textCol, multiplier), textScale, "Outfit-Bold");
+			DrawDXText(pDevice, items[i], tx - 20.0f, ty - 5.0f, ModulateAlpha(textCol, multiplier), textScale, "Outfit");
 		}
 	}
 }
@@ -946,7 +1263,174 @@ void DrawDXBorder(IDirect3DDevice9* pDevice, float x, float y, float w, float h,
 	DrawDXRectangle(pDevice, x + w - thickness, y, thickness, h, color); // Right
 }
 
+#ifdef OMP_DX_DEBUG_SPAM_TEST
+std::atomic_bool g_debugSpamRunning = false;
+
+void StartDebugDXSpamTest()
+{
+	bool expected = false;
+	if (!g_debugSpamRunning.compare_exchange_strong(expected, true)) {
+		LogToFile("DebugSpamTest: already running.");
+		return;
+	}
+
+	LogToFile("DebugSpamTest: starting random RPC 192 element-id spam for 3 seconds.");
+	if (samp::RefChat()) {
+		samp::RefChat()->AddMessage(0xFFFFAA00, "OMP-DX debug: random ID spam test started (3 seconds).");
+	}
+
+	std::thread([] {
+		uint32_t seed = GetTickCount() ^ 0xA5A5C3D2u;
+		const DWORD start = GetTickCount();
+		int sent = 0;
+		while (GetTickCount() - start < 3000) {
+			seed = seed * 1664525u + 1013904223u;
+			const uint8_t subtype = static_cast<uint8_t>((seed % 13u) + 1u);
+			seed = seed * 1664525u + 1013904223u;
+			const int32_t elementId = static_cast<int32_t>(100000000 + (seed & 0x3FFFFFFF));
+
+			RakNet::BitStream bs;
+			bs.Write(subtype);
+			bs.Write(elementId);
+			rakhook::send_rpc(192, &bs, HIGH_PRIORITY, RELIABLE_ORDERED, 0, false);
+			++sent;
+
+			if ((sent % 64) == 0) {
+				Sleep(1);
+			}
+		}
+
+		LogToFile("DebugSpamTest: completed. Sent " + std::to_string(sent) + " random RPC 192 events.");
+		if (samp::RefChat()) {
+			samp::RefChat()->AddMessage(0xFFFFAA00, "OMP-DX debug: random ID spam test completed. Check dx_server_log.txt.");
+		}
+		g_debugSpamRunning = false;
+	}).detach();
+}
+
+bool FindDebugSpamTarget(int& elementId, DXElementType& type)
+{
+	std::lock_guard<std::mutex> lock(g_dxMutex);
+	const auto preferred = g_dxElements.find(9110);
+	if (preferred != g_dxElements.end() && preferred->second.type == DXElementType::Button) {
+		elementId = preferred->first;
+		type = preferred->second.type;
+		return true;
+	}
+	for (const auto& [id, elem] : g_dxElements) {
+		if (id == 9104) {
+			continue;
+		}
+		if (elem.type == DXElementType::Button ||
+			elem.type == DXElementType::Checkbox ||
+			elem.type == DXElementType::Slider ||
+			elem.type == DXElementType::ComboBox ||
+			elem.type == DXElementType::ListView ||
+			elem.type == DXElementType::TabPanel ||
+			elem.type == DXElementType::ColorPicker ||
+			elem.type == DXElementType::ScrollContainer) {
+			elementId = id;
+			type = elem.type;
+			return true;
+		}
+	}
+	return false;
+}
+
+void WriteDebugValidEventPayload(RakNet::BitStream& bs, DXElementType type, int elementId, uint32_t seq)
+{
+	if (type == DXElementType::Button) {
+		bs.Write(static_cast<uint8_t>(1));
+		bs.Write(elementId);
+	} else if (type == DXElementType::Checkbox) {
+		bs.Write(static_cast<uint8_t>(2));
+		bs.Write(elementId);
+		bs.Write((seq & 1u) != 0);
+	} else if (type == DXElementType::Slider) {
+		bs.Write(static_cast<uint8_t>(5));
+		bs.Write(elementId);
+		bs.Write(static_cast<float>((seq % 100u) / 100.0f));
+	} else if (type == DXElementType::ComboBox) {
+		bs.Write(static_cast<uint8_t>(6));
+		bs.Write(elementId);
+		bs.Write(static_cast<int32_t>(seq % 2u));
+	} else if (type == DXElementType::ListView) {
+		bs.Write(static_cast<uint8_t>(7));
+		bs.Write(elementId);
+		bs.Write(static_cast<int32_t>(seq % 2u));
+	} else if (type == DXElementType::TabPanel) {
+		bs.Write(static_cast<uint8_t>(8));
+		bs.Write(elementId);
+		bs.Write(static_cast<int32_t>(seq % 2u));
+	} else if (type == DXElementType::ColorPicker) {
+		bs.Write(static_cast<uint8_t>(12));
+		bs.Write(elementId);
+		bs.Write(static_cast<uint32_t>(0xFF000000u | (seq & 0x00FFFFFFu)));
+	} else if (type == DXElementType::ScrollContainer) {
+		bs.Write(static_cast<uint8_t>(13));
+		bs.Write(elementId);
+		bs.Write(static_cast<float>((seq % 100u) / 100.0f));
+	}
+}
+
+void StartDebugDXValidElementSpamTest()
+{
+	bool expected = false;
+	if (!g_debugSpamRunning.compare_exchange_strong(expected, true)) {
+		LogToFile("DebugValidSpamTest: already running.");
+		return;
+	}
+
+	int elementId = -1;
+	DXElementType type = DXElementType::Rectangle;
+	if (!FindDebugSpamTarget(elementId, type)) {
+		LogToFile("DebugValidSpamTest: no interactive DX element found.");
+		if (samp::RefChat()) {
+			samp::RefChat()->AddMessage(0xFFFFAA00, "OMP-DX debug: no interactive DX element found. Open /dxfont first.");
+		}
+		g_debugSpamRunning = false;
+		return;
+	}
+
+	LogToFile("DebugValidSpamTest: starting valid element spam. ElementID=" + std::to_string(elementId));
+	if (samp::RefChat()) {
+		samp::RefChat()->AddMessage(0xFFFFAA00, "OMP-DX debug: valid ID spam test started (3 seconds).");
+	}
+
+	std::thread([elementId, type] {
+		const DWORD start = GetTickCount();
+		uint32_t sent = 0;
+		while (GetTickCount() - start < 3000) {
+			RakNet::BitStream bs;
+			WriteDebugValidEventPayload(bs, type, elementId, sent);
+			rakhook::send_rpc(192, &bs, HIGH_PRIORITY, RELIABLE_ORDERED, 0, false);
+			++sent;
+			if ((sent % 64u) == 0) {
+				Sleep(1);
+			}
+		}
+
+		LogToFile("DebugValidSpamTest: completed. Sent " + std::to_string(sent) + " valid-element RPC 192 events.");
+		if (samp::RefChat()) {
+			samp::RefChat()->AddMessage(0xFFFFAA00, "OMP-DX debug: valid ID spam test completed. Check dx_server_log.txt.");
+		}
+		g_debugSpamRunning = false;
+	}).detach();
+}
+#endif
+
 LRESULT CALLBACK hkWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
+#ifdef OMP_DX_DEBUG_SPAM_TEST
+	if (uMsg == WM_KEYDOWN && wParam == VK_F10) {
+		StartDebugDXSpamTest();
+		return 1;
+	}
+	if (uMsg == WM_KEYDOWN && wParam == VK_F11) {
+		StartDebugDXValidElementSpamTest();
+		return 1;
+	}
+#endif
+
 	if (uMsg == WM_MOUSEMOVE || uMsg == WM_LBUTTONDOWN || uMsg == WM_LBUTTONUP) {
 		POINT pt;
 		if (GetCursorPos(&pt)) {
@@ -1727,9 +2211,6 @@ int GetFontAwesomeIconChar(const std::string& name) {
 	return 0;
 }
 
-void LoadFontLocal(const std::string& fontFamily, const std::string& localPath);
-void DownloadAndLoadFont(std::string fontFamily, std::string url, std::string localPath);
-
 const DXFont* GetFontOrCreate(IDirect3DDevice9* pDevice, const std::string& fontName) {
 	std::string activeFont = fontName;
 	if (activeFont.empty()) {
@@ -1828,36 +2309,199 @@ const DXFont* GetFontOrCreate(IDirect3DDevice9* pDevice, const std::string& font
 }
 
 bool IsFontRegistered(const std::string& fontName) {
-	if (fontName.empty() || fontName == "Segoe UI" || fontName == "Arial" || fontName == "Tahoma" || fontName == "Courier New" || fontName == "Outfit-Bold" || fontName == "Outfit") {
+	if (fontName.empty() || fontName == "Segoe UI" || fontName == "Arial" || fontName == "Tahoma" || fontName == "Courier New") {
 		return true;
 	}
-	std::string matchSuffix = "\\" + fontName + ".ttf";
-	std::string matchSuffix2 = "/" + fontName + ".ttf";
 	std::lock_guard<std::mutex> lock(g_fontMutex);
-	for (const auto& path : g_loadedFontPaths) {
-		if (path.length() >= matchSuffix.length()) {
-			std::string suffix = path.substr(path.length() - matchSuffix.length());
-			for (char& c : suffix) c = tolower(c);
-			std::string matchLower = matchSuffix;
-			for (char& c : matchLower) c = tolower(c);
-			if (suffix == matchLower) return true;
+	return g_loadedFontFamilies.find(fontName) != g_loadedFontFamilies.end();
+}
+
+std::wstring Utf8ToWide(const std::string& text) {
+	if (text.empty()) {
+		return L"";
+	}
+	int needed = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, text.data(), static_cast<int>(text.size()), nullptr, 0);
+	if (needed <= 0) {
+		needed = MultiByteToWideChar(CP_ACP, 0, text.data(), static_cast<int>(text.size()), nullptr, 0);
+		if (needed <= 0) {
+			return L"";
 		}
-		if (path.length() >= matchSuffix2.length()) {
-			std::string suffix = path.substr(path.length() - matchSuffix2.length());
-			for (char& c : suffix) c = tolower(c);
-			std::string matchLower = matchSuffix2;
-			for (char& c : matchLower) c = tolower(c);
-			if (suffix == matchLower) return true;
+		std::wstring fallback(needed, L'\0');
+		MultiByteToWideChar(CP_ACP, 0, text.data(), static_cast<int>(text.size()), fallback.data(), needed);
+		return fallback;
+	}
+	std::wstring wide(needed, L'\0');
+	MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, text.data(), static_cast<int>(text.size()), wide.data(), needed);
+	return wide;
+}
+
+bool TryReadColorTag(const std::wstring& text, std::size_t index, DWORD baseColor, DWORD& outColor) {
+	if (index + 7 >= text.size() || text[index] != L'{' || text[index + 7] != L'}') {
+		return false;
+	}
+	unsigned int parsedVal = 0;
+	for (int k = 0; k < 6; ++k) {
+		wchar_t hc = text[index + 1 + k];
+		unsigned int val = 0;
+		if (hc >= L'0' && hc <= L'9') val = static_cast<unsigned int>(hc - L'0');
+		else if (hc >= L'a' && hc <= L'f') val = static_cast<unsigned int>(hc - L'a' + 10);
+		else if (hc >= L'A' && hc <= L'F') val = static_cast<unsigned int>(hc - L'A' + 10);
+		else return false;
+		parsedVal = (parsedVal << 4) | val;
+	}
+	outColor = (baseColor & 0xFF000000) | parsedVal;
+	return true;
+}
+
+uint32_t NextCodepoint(const std::wstring& text, std::size_t& index) {
+	wchar_t first = text[index++];
+	if (first >= 0xD800 && first <= 0xDBFF && index < text.size()) {
+		wchar_t second = text[index];
+		if (second >= 0xDC00 && second <= 0xDFFF) {
+			++index;
+			return 0x10000u + ((static_cast<uint32_t>(first - 0xD800) << 10) | static_cast<uint32_t>(second - 0xDC00));
 		}
 	}
-	return false;
+	return static_cast<uint32_t>(first);
+}
+
+std::wstring CodepointToWide(uint32_t codepoint) {
+	if (codepoint <= 0xFFFF) {
+		return std::wstring(1, static_cast<wchar_t>(codepoint));
+	}
+	codepoint -= 0x10000u;
+	std::wstring out;
+	out.push_back(static_cast<wchar_t>(0xD800u + (codepoint >> 10)));
+	out.push_back(static_cast<wchar_t>(0xDC00u + (codepoint & 0x3FFu)));
+	return out;
+}
+
+DXImageTexture* GetGlyphOrCreate(IDirect3DDevice9* pDevice, DXFont& font, const std::string& fontName, uint32_t codepoint) {
+	auto glyphIt = font.glyphs.find(codepoint);
+	if (glyphIt != font.glyphs.end()) {
+		return &glyphIt->second;
+	}
+
+	const std::wstring glyphText = CodepointToWide(codepoint);
+	if (glyphText.empty()) {
+		return nullptr;
+	}
+	const std::wstring wideFontName = Utf8ToWide(fontName.empty() ? std::string("Segoe UI") : fontName);
+
+	HDC hdcMem = CreateCompatibleDC(NULL);
+	if (!hdcMem) {
+		return nullptr;
+	}
+	HFONT hFont = CreateFontW(24, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+		OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY, DEFAULT_PITCH | FF_DONTCARE, wideFontName.c_str());
+	HGDIOBJ hOldFont = SelectObject(hdcMem, hFont);
+	SIZE sz {};
+	GetTextExtentPoint32W(hdcMem, glyphText.c_str(), static_cast<int>(glyphText.size()), &sz);
+	const int measuredWidth = static_cast<int>(sz.cx);
+	const int width = (std::max)(1, (std::min)(measuredWidth + 4, 128));
+	const int height = 32;
+
+	BITMAPINFO bmi = { 0 };
+	bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+	bmi.bmiHeader.biWidth = width;
+	bmi.bmiHeader.biHeight = -height;
+	bmi.bmiHeader.biPlanes = 1;
+	bmi.bmiHeader.biBitCount = 32;
+	bmi.bmiHeader.biCompression = BI_RGB;
+
+	void* pBits = nullptr;
+	HBITMAP hbmMem = CreateDIBSection(hdcMem, &bmi, DIB_RGB_COLORS, &pBits, NULL, 0);
+	HGDIOBJ hOldBmp = SelectObject(hdcMem, hbmMem);
+	SetTextColor(hdcMem, RGB(255, 255, 255));
+	SetBkMode(hdcMem, TRANSPARENT);
+	memset(pBits, 0, width * height * 4);
+	TextOutW(hdcMem, 2, 0, glyphText.c_str(), static_cast<int>(glyphText.size()));
+
+	IDirect3DTexture9* texture = nullptr;
+	if (FAILED(pDevice->CreateTexture(width, height, 1, 0, D3DFMT_A8R8G8B8, D3DPOOL_MANAGED, &texture, NULL))) {
+		SelectObject(hdcMem, hOldBmp);
+		DeleteObject(hbmMem);
+		SelectObject(hdcMem, hOldFont);
+		DeleteObject(hFont);
+		DeleteDC(hdcMem);
+		return nullptr;
+	}
+
+	D3DLOCKED_RECT rect;
+	if (FAILED(texture->LockRect(0, &rect, NULL, 0))) {
+		texture->Release();
+		SelectObject(hdcMem, hOldBmp);
+		DeleteObject(hbmMem);
+		SelectObject(hdcMem, hOldFont);
+		DeleteObject(hFont);
+		DeleteDC(hdcMem);
+		return nullptr;
+	}
+
+	unsigned char* pDest = static_cast<unsigned char*>(rect.pBits);
+	unsigned char* pSrc = static_cast<unsigned char*>(pBits);
+	for (int ty = 0; ty < height; ++ty) {
+		for (int tx = 0; tx < width; ++tx) {
+			int idx = (ty * width + tx) * 4;
+			unsigned char val = pSrc[idx + 2];
+			pDest[ty * rect.Pitch + tx * 4 + 0] = 255;
+			pDest[ty * rect.Pitch + tx * 4 + 1] = 255;
+			pDest[ty * rect.Pitch + tx * 4 + 2] = 255;
+			pDest[ty * rect.Pitch + tx * 4 + 3] = val;
+		}
+	}
+	texture->UnlockRect(0);
+
+	SelectObject(hdcMem, hOldBmp);
+	DeleteObject(hbmMem);
+	SelectObject(hdcMem, hOldFont);
+	DeleteObject(hFont);
+	DeleteDC(hdcMem);
+
+	DXImageTexture glyph {};
+	glyph.texture = texture;
+	glyph.width = width;
+	glyph.height = height;
+	font.glyphWidths[codepoint] = static_cast<float>((std::max)(1, measuredWidth));
+	auto [it, inserted] = font.glyphs.emplace(codepoint, glyph);
+	return &it->second;
+}
+
+float MeasureDXTextWidth(IDirect3DDevice9* pDevice, const std::string& text, float scale, const std::string& fontName = "") {
+	const DXFont* constFont = GetFontOrCreate(pDevice, fontName);
+	if (!constFont) {
+		return 0.0f;
+	}
+	DXFont* font = const_cast<DXFont*>(constFont);
+	const std::wstring wide = Utf8ToWide(text);
+	float width = 0.0f;
+	for (std::size_t i = 0; i < wide.size();) {
+		DWORD ignored = 0;
+		if (TryReadColorTag(wide, i, 0xFFFFFFFF, ignored)) {
+			i += 8;
+			continue;
+		}
+		uint32_t codepoint = NextCodepoint(wide, i);
+		if (codepoint < 32) {
+			continue;
+		}
+		if (codepoint < 256 && font->charWidths[codepoint] > 0.0f) {
+			width += font->charWidths[codepoint] * scale;
+			continue;
+		}
+		DXImageTexture* glyph = GetGlyphOrCreate(pDevice, *font, fontName, codepoint);
+		if (glyph) {
+			width += font->glyphWidths[codepoint] * scale;
+		}
+	}
+	return width;
 }
 
 void DrawDXText(IDirect3DDevice9* pDevice, const std::string& text, float x, float y, DWORD color, float scale, const std::string& fontName = "") {
 	const DXFont* pFont = GetFontOrCreate(pDevice, fontName);
 	if (!pFont) return;
+	DXFont* mutableFont = const_cast<DXFont*>(pFont);
 
-	pDevice->SetTexture(0, pFont->texture);
 	pDevice->SetSamplerState(0, D3DSAMP_MINFILTER, D3DTEXF_LINEAR);
 	pDevice->SetSamplerState(0, D3DSAMP_MAGFILTER, D3DTEXF_LINEAR);
 	pDevice->SetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_SELECTARG1);
@@ -1874,45 +2518,46 @@ void DrawDXText(IDirect3DDevice9* pDevice, const std::string& text, float x, flo
  
 	float curX = x;
 	DWORD activeColor = color;
-	for (size_t i = 0; i < text.length(); ++i) {
-		if (text[i] == '{' && i + 7 < text.length() && text[i + 7] == '}') {
-			std::string hexStr = text.substr(i + 1, 6);
-			bool validHex = true;
-			for (char hc : hexStr) {
-				if (!((hc >= '0' && hc <= '9') || (hc >= 'a' && hc <= 'f') || (hc >= 'A' && hc <= 'F'))) {
-					validHex = false;
-					break;
-				}
-			}
-			if (validHex) {
-				unsigned int parsedVal = 0;
-				for (int k = 0; k < 6; ++k) {
-					char hc = hexStr[k];
-					unsigned int val = 0;
-					if (hc >= '0' && hc <= '9') val = hc - '0';
-					else if (hc >= 'a' && hc <= 'f') val = hc - 'a' + 10;
-					else if (hc >= 'A' && hc <= 'F') val = hc - 'A' + 10;
-					parsedVal = (parsedVal << 4) | val;
-				}
-				DWORD alpha = color & 0xFF000000;
-				activeColor = alpha | parsedVal;
-				i += 7;
-				continue;
-			}
+	const std::wstring wide = Utf8ToWide(text);
+	for (std::size_t i = 0; i < wide.size();) {
+		DWORD taggedColor = 0;
+		if (TryReadColorTag(wide, i, color, taggedColor)) {
+			activeColor = taggedColor;
+			i += 8;
+			continue;
 		}
 
-		unsigned char uc = (unsigned char)text[i];
-		if (uc < 32) continue;
+		uint32_t codepoint = NextCodepoint(wide, i);
+		if (codepoint < 32) continue;
  
-		int col = uc % 16;
-		int row = uc / 16;
-		float u1 = col / 16.0f;
-		float v1 = row / 16.0f;
-		float u2 = u1 + pFont->charWidths[uc] / 512.0f;
-		float v2 = v1 + 32.0f / 512.0f;
- 
-		float w = pFont->charWidths[uc] * scale;
+		IDirect3DTexture9* glyphTexture = pFont->texture;
+		float u1 = 0.0f;
+		float v1 = 0.0f;
+		float u2 = 0.0f;
+		float v2 = 1.0f;
+		float w = 0.0f;
 		float h = pFont->charHeight * scale;
+
+		if (codepoint < 256 && pFont->charWidths[codepoint] > 0.0f) {
+			int col = static_cast<int>(codepoint) % 16;
+			int row = static_cast<int>(codepoint) / 16;
+			u1 = col / 16.0f;
+			v1 = row / 16.0f;
+			u2 = u1 + pFont->charWidths[codepoint] / 512.0f;
+			v2 = v1 + 32.0f / 512.0f;
+			w = pFont->charWidths[codepoint] * scale;
+		} else {
+			DXImageTexture* glyph = GetGlyphOrCreate(pDevice, *mutableFont, fontName, codepoint);
+			if (!glyph || !glyph->texture) {
+				continue;
+			}
+			glyphTexture = glyph->texture;
+			auto widthIt = mutableFont->glyphWidths.find(codepoint);
+			const float glyphWidth = widthIt != mutableFont->glyphWidths.end() ? widthIt->second : static_cast<float>(glyph->width);
+			u2 = 1.0f;
+			w = glyphWidth * scale;
+			h = static_cast<float>(glyph->height) * scale;
+		}
  
 		FontVertex vertices[4] = {
 			{ curX,     y,     0.0f, 1.0f, activeColor, u1, v1 },
@@ -1921,6 +2566,7 @@ void DrawDXText(IDirect3DDevice9* pDevice, const std::string& text, float x, flo
 			{ curX + w, y + h, 0.0f, 1.0f, activeColor, u2, v2 }
 		};
  
+		pDevice->SetTexture(0, glyphTexture);
 		pDevice->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, vertices, sizeof(FontVertex));
 		curX += w;
 	}
@@ -2474,44 +3120,6 @@ void RenderDXElements(IDirect3DDevice9* pDevice) {
 		else if (elem.type == DXElementType::Icon) {
 			std::string faName = elem.font.empty() ? "FontAwesome" : elem.font;
 
-			if (faName == "FontAwesome") {
-				static bool faDownloadTriggered = false;
-				extern bool IsFontRegistered(const std::string& fontName);
-				bool faRegistered = IsFontRegistered(faName);
-				if (!faRegistered) {
-					std::string localPath = "omp-dx\\fonts\\FontAwesome.ttf";
-					std::string url = "https://cdnjs.cloudflare.com/ajax/libs/font-awesome/4.7.0/fonts/fontawesome-webfont.ttf";
-					CreateDirectoryA("omp-dx", NULL);
-					CreateDirectoryA("omp-dx\\fonts", NULL);
-					DWORD fileAttr = GetFileAttributesA(localPath.c_str());
-					bool fileExists = (fileAttr != INVALID_FILE_ATTRIBUTES && !(fileAttr & FILE_ATTRIBUTE_DIRECTORY));
-
-					if (fileExists) {
-						HANDLE hFile = CreateFileA(localPath.c_str(), GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
-						if (hFile != INVALID_HANDLE_VALUE) {
-							DWORD fileSize = GetFileSize(hFile, NULL);
-							CloseHandle(hFile);
-							if (fileSize > 1000) {
-								LoadFontLocal(faName, localPath);
-								faRegistered = true;
-								LogToFile("Icon: FontAwesome font registered successfully (" + std::to_string(fileSize) + " bytes)");
-							} else {
-								DeleteFileA(localPath.c_str());
-								fileExists = false;
-								LogToFile("Icon: FontAwesome.ttf invalid (" + std::to_string(fileSize) + " bytes), deleting for re-download");
-							}
-						}
-					}
-
-					if (!fileExists && !faDownloadTriggered) {
-						faDownloadTriggered = true;
-						LogToFile("Icon: Starting FontAwesome download from CDN...");
-						std::thread t(DownloadAndLoadFont, faName, url, localPath);
-						t.detach();
-					}
-				}
-			}
-
 			extern bool IsFontRegistered(const std::string& fontName);
 			if (IsFontRegistered(faName)) {
 				const DXFont* pFont = GetFontOrCreate(pDevice, faName);
@@ -2537,10 +3145,7 @@ void RenderDXElements(IDirect3DDevice9* pDevice) {
 			float charHeight = 32.0f;
 			if (pFont) {
 				charHeight = pFont->charHeight;
-				for (char c : elem.text) {
-					unsigned char uc = (unsigned char)c;
-					if (uc >= 32) textWidth += pFont->charWidths[uc] * elem.scale;
-				}
+				textWidth = MeasureDXTextWidth(pDevice, elem.text, elem.scale, elem.font);
 			}
 			float textX = absX + (elem.width - textWidth) / 2.0f;
 			float textY = absY + (elem.height - charHeight * elem.scale) / 2.0f;
@@ -2600,10 +3205,7 @@ void RenderDXElements(IDirect3DDevice9* pDevice) {
 				float textWidth = 0.0f;
 				if (pFont) {
 					std::string measureText = elem.isPassword ? std::string(elem.text.length(), '*') : elem.text;
-					for (char c : measureText) {
-						unsigned char uc = (unsigned char)c;
-						if (uc >= 32) textWidth += pFont->charWidths[uc] * elem.scale;
-					}
+					textWidth = MeasureDXTextWidth(pDevice, measureText, elem.scale, elem.font);
 				}
 				float cursorX = textX + textWidth + 2.0f;
 				DrawDXRectangle(pDevice, cursorX, textY + 2.0f, 2.0f, charHeight * elem.scale - 4.0f, activeColor);
@@ -2715,8 +3317,8 @@ void RenderDXElements(IDirect3DDevice9* pDevice) {
 void c_plugin::everything()
 {
 	hWnd = FindWindowA("Grand Theft Auto San Andreas", NULL);
+	DWORD procID = 0;
 	GetWindowThreadProcessId(hWnd, &procID);
-	handle = OpenProcess(PROCESS_ALL_ACCESS, FALSE, procID);
 	LogToFile("everything(): Found HWND=" + std::to_string((uintptr_t)hWnd) + ", ProcessID=" + std::to_string(procID));
 
 	Gdiplus::GdiplusStartupInput gdiplusStartupInput;
@@ -2740,6 +3342,22 @@ HRESULT __stdcall hkPresent(IDirect3DDevice9* pDevice, const RECT* pSourceRect, 
 		LogToFile("hkPresent: Initializing on device 0x" + std::to_string((uintptr_t)pDevice));
 		g_bwasInitialized = true;
 	}
+
+#ifdef OMP_DX_DEBUG_SPAM_TEST
+	static bool wasF10Down = false;
+	static bool wasF11Down = false;
+	const bool isF10Down = (GetAsyncKeyState(VK_F10) & 0x8000) != 0;
+	if (isF10Down && !wasF10Down) {
+		StartDebugDXSpamTest();
+	}
+	wasF10Down = isF10Down;
+
+	const bool isF11Down = (GetAsyncKeyState(VK_F11) & 0x8000) != 0;
+	if (isF11Down && !wasF11Down) {
+		StartDebugDXValidElementSpamTest();
+	}
+	wasF11Down = isF11Down;
+#endif
 
 	D3DVIEWPORT9 vp;
 	if (SUCCEEDED(pDevice->GetViewport(&vp))) {
@@ -2794,37 +3412,6 @@ void DownloadAndPlaySound(std::string url, std::string localPath) {
 	}
 }
 
-void LoadFontLocal(const std::string& fontFamily, const std::string& localPath) {
-	LogToFile("LoadFontLocal: Loading font: " + fontFamily + " from path: " + localPath);
-	DWORD numFonts = AddFontResourceExA(localPath.c_str(), FR_PRIVATE, NULL);
-	if (numFonts > 0) {
-		LogToFile("LoadFontLocal: Successfully loaded private font resource: " + fontFamily + " (Total: " + std::to_string(numFonts) + ")");
-		g_loadedFontPaths.push_back(localPath);
-
-		std::lock_guard<std::mutex> lock(g_fontMutex);
-		auto it = g_dxFonts.find(fontFamily);
-		if (it != g_dxFonts.end()) {
-			if (it->second.texture) {
-				it->second.texture->Release();
-			}
-			g_dxFonts.erase(it);
-			LogToFile("LoadFontLocal: Cleared pre-existing/fallback texture for font: " + fontFamily);
-		}
-	} else {
-		LogToFile("LoadFontLocal: FAILED to load font resource: " + fontFamily);
-	}
-}
-
-void DownloadAndLoadFont(std::string fontFamily, std::string url, std::string localPath) {
-	LogToFile("DownloadAndLoadFont: Starting background download from: " + url + " to: " + localPath);
-	if (DownloadFileWinINet(url, localPath)) {
-		LogToFile("DownloadAndLoadFont: Download completed successfully for font: " + fontFamily);
-		LoadFontLocal(fontFamily, localPath);
-	} else {
-		LogToFile("DownloadAndLoadFont: FAILED to download font: " + fontFamily);
-	}
-}
-
 void c_plugin::game_loop()
 {
 	static bool initialized = false;
@@ -2843,6 +3430,10 @@ void c_plugin::game_loop()
 
 	initialized = true;
 	StringCompressor::AddReference();
+	LoadBundledFont("FontAwesome", "FontAwesome.ttf", false);
+	LoadBundledFont("Outfit", "Outfit.ttf", false);
+	LoadBundledFont("Poppins", "Poppins.ttf", false);
+	LoadBundledFont("JetBrains Mono", "JetBrainsMono.ttf", false);
 
 	LogToFile("c_plugin::game_loop(): Plugin initialized successfully!");
 	samp::RefChat()->AddMessage(-1, "ASI-Plugin | Custom DX Renderer Active");
@@ -2866,18 +3457,28 @@ void c_plugin::game_loop()
 		if (id == 190) {
 			int numBytes = bs->GetNumberOfBytesUsed();
 			int numBits = bs->GetNumberOfBitsUsed();
+			if (numBytes <= 0 || numBytes > 9 * 1024 * 1024) {
+				LogToFile("on_receive_rpc 190: Rejected invalid packet size: " + std::to_string(numBytes));
+				return false;
+			}
 			unsigned char* pData = bs->GetData();
 			std::string hexStr;
-			for (int i = 0; i < numBytes; i++) {
+			const int loggedBytes = (std::min)(numBytes, 256);
+			for (int i = 0; i < loggedBytes; i++) {
 				char tmp[8];
 				sprintf_s(tmp, "%02X ", pData[i]);
 				hexStr += tmp;
 			}
+			if (loggedBytes != numBytes) hexStr += "...";
 			LogToFile("on_receive_rpc 190: Bits=" + std::to_string(numBits) + ", Bytes=" + std::to_string(numBytes) + ", Hex: " + hexStr);
 
 			uint8_t subtype = 0;
 			if (!bs->Read(subtype)) {
 				LogToFile("rakhook::on_receive_rpc: Failed to read subtype!");
+				return false;
+			}
+			if (subtype == 0 || subtype > 37 || subtype == 34) {
+				LogToFile("on_receive_rpc 190: Rejected unknown subtype: " + std::to_string(subtype));
 				return false;
 			}
 
@@ -2963,6 +3564,15 @@ void c_plugin::game_loop()
 				}
 			}
 
+			const bool createsElement =
+				(subtype >= 1 && subtype <= 2) || (subtype >= 5 && subtype <= 7) ||
+				(subtype >= 9 && subtype <= 19) || subtype == 22 || subtype == 24 ||
+				(subtype >= 27 && subtype <= 30) || subtype == 32 || subtype == 33 || subtype == 35;
+			if (createsElement && !hasOldElement && g_dxElements.size() >= 4096) {
+				LogToFile("on_receive_rpc 190: Rejected element limit overflow.");
+				return false;
+			}
+
 			if (subtype == 1) { // Create/Update Rectangle
 				int32_t elementId;
 				float x, y, width, height;
@@ -2990,21 +3600,9 @@ void c_plugin::game_loop()
 				float x, y, scale;
 				uint32_t color;
 				if (bs->Read(elementId) && bs->Read(x) && bs->Read(y) && bs->Read(color) && bs->Read(scale)) {
-					uint16_t len = 0;
-					if (bs->Read(len)) {
-						std::string text;
-						if (len > 0) {
-							text.resize(len);
-							bs->Read(&text[0], len);
-						}
-						std::string font;
-						uint16_t fontLen = 0;
-						if (bs->Read(fontLen)) {
-							if (fontLen > 0) {
-								font.resize(fontLen);
-								bs->Read(&font[0], fontLen);
-							}
-						}
+					std::string text;
+					std::string font;
+					if (ReadBoundedString(bs, text, 4096) && ReadBoundedString(bs, font, 128)) {
 						DXElement elem;
 						elem.id = elementId;
 						elem.type = DXElementType::Text;
@@ -3019,7 +3617,7 @@ void c_plugin::game_loop()
 							", X=" + std::to_string(x) + ", Y=" + std::to_string(y) + 
 							", Scale=" + std::to_string(scale) + ", Text='" + text + "', Font='" + font + "'");
 					} else {
-						LogToFile("RPC Subtype 2 (Text): Failed to read text length!");
+						LogToFile("RPC Subtype 2 (Text): Rejected malformed strings.");
 					}
 				} else {
 					LogToFile("RPC Subtype 2 (Text): Failed to read parameters!");
@@ -3051,21 +3649,9 @@ void c_plugin::game_loop()
 				float x, y, width, height, scale;
 				uint32_t color;
 				if (bs->Read(elementId) && bs->Read(x) && bs->Read(y) && bs->Read(width) && bs->Read(height) && bs->Read(color) && bs->Read(scale)) {
-					uint16_t len = 0;
-					if (bs->Read(len)) {
-						std::string text;
-						if (len > 0) {
-							text.resize(len);
-							bs->Read(&text[0], len);
-						}
-						std::string font;
-						uint16_t fontLen = 0;
-						if (bs->Read(fontLen)) {
-							if (fontLen > 0) {
-								font.resize(fontLen);
-								bs->Read(&font[0], fontLen);
-							}
-						}
+					std::string text;
+					std::string font;
+					if (ReadBoundedString(bs, text, 1024) && ReadBoundedString(bs, font, 128)) {
 						DXElement elem;
 						elem.id = elementId;
 						elem.type = DXElementType::Button;
@@ -3082,6 +3668,8 @@ void c_plugin::game_loop()
 							", X=" + std::to_string(x) + ", Y=" + std::to_string(y) + 
 							", W=" + std::to_string(width) + ", H=" + std::to_string(height) + 
 							", Scale=" + std::to_string(scale) + ", Text='" + text + "', Font='" + font + "'");
+					} else {
+						LogToFile("RPC Subtype 5 (Button): Rejected malformed strings.");
 					}
 				}
 			}
@@ -3091,21 +3679,9 @@ void c_plugin::game_loop()
 				uint32_t color;
 				bool checked;
 				if (bs->Read(elementId) && bs->Read(x) && bs->Read(y) && bs->Read(width) && bs->Read(height) && bs->Read(color) && bs->Read(checked) && bs->Read(scale)) {
-					uint16_t len = 0;
-					if (bs->Read(len)) {
-						std::string text;
-						if (len > 0) {
-							text.resize(len);
-							bs->Read(&text[0], len);
-						}
-						std::string font;
-						uint16_t fontLen = 0;
-						if (bs->Read(fontLen)) {
-							if (fontLen > 0) {
-								font.resize(fontLen);
-								bs->Read(&font[0], fontLen);
-							}
-						}
+					std::string text;
+					std::string font;
+					if (ReadBoundedString(bs, text, 1024) && ReadBoundedString(bs, font, 128)) {
 						DXElement elem;
 						elem.id = elementId;
 						elem.type = DXElementType::Checkbox;
@@ -3123,6 +3699,8 @@ void c_plugin::game_loop()
 							", X=" + std::to_string(x) + ", Y=" + std::to_string(y) + 
 							", W=" + std::to_string(width) + ", H=" + std::to_string(height) + 
 							", Checked=" + std::to_string(checked) + ", Scale=" + std::to_string(scale) + ", Label='" + text + "', Font='" + font + "'");
+					} else {
+						LogToFile("RPC Subtype 6 (Checkbox): Rejected malformed strings.");
 					}
 				}
 			}
@@ -3131,29 +3709,14 @@ void c_plugin::game_loop()
 				float x, y, width, height, scale;
 				uint32_t color;
 				if (bs->Read(elementId) && bs->Read(x) && bs->Read(y) && bs->Read(width) && bs->Read(height) && bs->Read(color) && bs->Read(scale)) {
-					uint16_t textLen = 0;
 					std::string text;
-					if (bs->Read(textLen)) {
-						if (textLen > 0) {
-							text.resize(textLen);
-							bs->Read(&text[0], textLen);
-						}
-					}
-					uint16_t phLen = 0;
 					std::string placeholder;
-					if (bs->Read(phLen)) {
-						if (phLen > 0) {
-							placeholder.resize(phLen);
-							bs->Read(&placeholder[0], phLen);
-						}
-					}
 					std::string font;
-					uint16_t fontLen = 0;
-					if (bs->Read(fontLen)) {
-						if (fontLen > 0) {
-							font.resize(fontLen);
-							bs->Read(&font[0], fontLen);
-						}
+					if (!ReadBoundedString(bs, text, 1024) ||
+						!ReadBoundedString(bs, placeholder, 1024) ||
+						!ReadBoundedString(bs, font, 128)) {
+						LogToFile("RPC Subtype 7 (Input): Rejected malformed strings.");
+						return false;
 					}
 					DXElement elem;
 					elem.id = elementId;
@@ -3175,36 +3738,13 @@ void c_plugin::game_loop()
 				}
 			}
 			else if (subtype == 8) { // Load Font
-				uint16_t familyLen = 0;
 				std::string fontFamily;
-				if (bs->Read(familyLen)) {
-					if (familyLen > 0) {
-						fontFamily.resize(familyLen);
-						bs->Read(&fontFamily[0], familyLen);
-					}
+				std::string fileName;
+				if (!ReadBoundedString(bs, fontFamily, 64, false) || !ReadBoundedString(bs, fileName, 128, false)) {
+					LogToFile("RPC Subtype 8 (Load Font): Rejected malformed local font request.");
+					return false;
 				}
-				uint16_t urlLen = 0;
-				std::string url;
-				if (bs->Read(urlLen)) {
-					if (urlLen > 0) {
-						url.resize(urlLen);
-						bs->Read(&url[0], urlLen);
-					}
-				}
-				if (!fontFamily.empty() && !url.empty()) {
-					CreateDirectoryA("omp-dx", NULL);
-					CreateDirectoryA("omp-dx\\fonts", NULL);
-					std::string localPath = "omp-dx\\fonts\\" + fontFamily + ".ttf";
-					DWORD fileAttr = GetFileAttributesA(localPath.c_str());
-					if (fileAttr != INVALID_FILE_ATTRIBUTES && !(fileAttr & FILE_ATTRIBUTE_DIRECTORY)) {
-						LogToFile("RPC Subtype 8 (Load Font): Local file already exists: " + localPath);
-						LoadFontLocal(fontFamily, localPath);
-					} else {
-						LogToFile("RPC Subtype 8 (Load Font): Starting async download for: " + fontFamily + " from: " + url);
-						std::thread downloadThread(DownloadAndLoadFont, fontFamily, url, localPath);
-						downloadThread.detach();
-					}
-				}
+				LoadBundledFont(fontFamily, fileName);
 			}
 			else if (subtype == 9) { // Create/Update Image
 				int32_t elementId;
@@ -3369,10 +3909,9 @@ void c_plugin::game_loop()
 				if (bs->Read(elementId) && bs->Read(x) && bs->Read(y) && bs->Read(width) && bs->Read(height) &&
 					bs->Read(color) && bs->Read(value)) {
 					std::string font;
-					uint16_t fontLen = 0;
-					if (bs->Read(fontLen) && fontLen > 0) {
-						font.resize(fontLen);
-						bs->Read(&font[0], fontLen);
+					if (!ReadBoundedString(bs, font, 128)) {
+						LogToFile("RPC Subtype 16 (Slider): Rejected malformed font.");
+						return false;
 					}
 					DXElement elem;
 					elem.id = elementId;
@@ -3399,16 +3938,10 @@ void c_plugin::game_loop()
 				if (bs->Read(elementId) && bs->Read(x) && bs->Read(y) && bs->Read(width) && bs->Read(height) &&
 					bs->Read(color) && bs->Read(selectedIndex)) {
 					std::string optionsStr;
-					uint16_t optLen = 0;
-					if (bs->Read(optLen) && optLen > 0) {
-						optionsStr.resize(optLen);
-						bs->Read(&optionsStr[0], optLen);
-					}
 					std::string font;
-					uint16_t fontLen = 0;
-					if (bs->Read(fontLen) && fontLen > 0) {
-						font.resize(fontLen);
-						bs->Read(&font[0], fontLen);
+					if (!ReadBoundedString(bs, optionsStr, 4096) || !ReadBoundedString(bs, font, 128)) {
+						LogToFile("RPC Subtype 17 (ComboBox): Rejected malformed strings.");
+						return false;
 					}
 					DXElement elem;
 					elem.id = elementId;
@@ -3435,16 +3968,10 @@ void c_plugin::game_loop()
 				if (bs->Read(elementId) && bs->Read(x) && bs->Read(y) && bs->Read(width) && bs->Read(height) &&
 					bs->Read(color) && bs->Read(selectedIndex)) {
 					std::string itemsStr;
-					uint16_t itemsLen = 0;
-					if (bs->Read(itemsLen) && itemsLen > 0) {
-						itemsStr.resize(itemsLen);
-						bs->Read(&itemsStr[0], itemsLen);
-					}
 					std::string font;
-					uint16_t fontLen = 0;
-					if (bs->Read(fontLen) && fontLen > 0) {
-						font.resize(fontLen);
-						bs->Read(&font[0], fontLen);
+					if (!ReadBoundedString(bs, itemsStr, 4096) || !ReadBoundedString(bs, font, 128)) {
+						LogToFile("RPC Subtype 18 (ListView): Rejected malformed strings.");
+						return false;
 					}
 					DXElement elem;
 					elem.id = elementId;
@@ -3471,16 +3998,10 @@ void c_plugin::game_loop()
 				if (bs->Read(elementId) && bs->Read(x) && bs->Read(y) && bs->Read(width) && bs->Read(height) &&
 					bs->Read(color) && bs->Read(selectedIndex)) {
 					std::string tabsStr;
-					uint16_t tabsLen = 0;
-					if (bs->Read(tabsLen) && tabsLen > 0) {
-						tabsStr.resize(tabsLen);
-						bs->Read(&tabsStr[0], tabsLen);
-					}
 					std::string font;
-					uint16_t fontLen = 0;
-					if (bs->Read(fontLen) && fontLen > 0) {
-						font.resize(fontLen);
-						bs->Read(&font[0], fontLen);
+					if (!ReadBoundedString(bs, tabsStr, 4096) || !ReadBoundedString(bs, font, 128)) {
+						LogToFile("RPC Subtype 19 (TabPanel): Rejected malformed strings.");
+						return false;
 					}
 					DXElement elem;
 					elem.id = elementId;
@@ -3555,12 +4076,11 @@ void c_plugin::game_loop()
 			}
 			else if (subtype == 23) { // SetTooltip
 				int32_t elementId;
-				uint16_t textLen = 0;
-				if (bs->Read(elementId) && bs->Read(textLen)) {
+				if (bs->Read(elementId)) {
 					std::string tooltip;
-					if (textLen > 0) {
-						tooltip.resize(textLen);
-						bs->Read(&tooltip[0], textLen);
+					if (!ReadBoundedString(bs, tooltip, 1024)) {
+						LogToFile("RPC Subtype 23 (SetTooltip): Rejected malformed text.");
+						return false;
 					}
 					auto it = g_dxElements.find(elementId);
 					if (it != g_dxElements.end()) {
@@ -3651,9 +4171,15 @@ void c_plugin::game_loop()
 				if (bs->Read(elementId) && bs->Read(x) && bs->Read(y) && bs->Read(w) && bs->Read(h) &&
 					bs->Read(color) && bs->Read(numValues) && bs->Read(maxVal)) {
 					std::vector<float> values;
+					if (numValues < 0 || numValues > 4096 ||
+						bs->GetNumberOfUnreadBits() < numValues * 32) {
+						LogToFile("RPC Subtype 27 (DrawGraph): Rejected invalid value count.");
+						return false;
+					}
+					values.reserve(static_cast<std::size_t>(numValues));
 					for (int i = 0; i < numValues; i++) {
 						float val = 0.0f;
-						bs->Read(val);
+						if (!bs->Read(val) || !std::isfinite(val)) return false;
 						values.push_back(val);
 					}
 					DXElement elem;
@@ -3742,14 +4268,9 @@ void c_plugin::game_loop()
 				if (bs->Read(elementId) && bs->Read(x) && bs->Read(y) && bs->Read(radius) &&
 					bs->Read(color) && bs->Read(selectedIndex)) {
 					std::string itemsStr, iconsStr;
-					uint16_t itemsLen = 0, iconsLen = 0;
-					if (bs->Read(itemsLen) && itemsLen > 0) {
-						itemsStr.resize(itemsLen);
-						bs->Read(&itemsStr[0], itemsLen);
-					}
-					if (bs->Read(iconsLen) && iconsLen > 0) {
-						iconsStr.resize(iconsLen);
-						bs->Read(&iconsStr[0], iconsLen);
+					if (!ReadBoundedString(bs, itemsStr, 4096) || !ReadBoundedString(bs, iconsStr, 4096)) {
+						LogToFile("RPC Subtype 30 (DrawRadialMenu): Rejected malformed strings.");
+						return false;
 					}
 					DXElement elem;
 					elem.id = elementId;
@@ -3819,16 +4340,10 @@ void c_plugin::game_loop()
 				uint32_t color;
 				if (bs->Read(elementId) && bs->Read(x) && bs->Read(y) && bs->Read(size) && bs->Read(color)) {
 					std::string iconName;
-					uint16_t nameLen = 0;
-					if (bs->Read(nameLen) && nameLen > 0) {
-						iconName.resize(nameLen);
-						bs->Read(&iconName[0], nameLen);
-					}
 					std::string fontName;
-					uint16_t fontLen = 0;
-					if (bs->Read(fontLen) && fontLen > 0) {
-						fontName.resize(fontLen);
-						bs->Read(&fontName[0], fontLen);
+					if (!ReadBoundedString(bs, iconName, 128) || !ReadBoundedString(bs, fontName, 128)) {
+						LogToFile("RPC Subtype 35 (DrawIcon): Rejected malformed strings.");
+						return false;
 					}
 					DXElement elem;
 					elem.id = elementId;
@@ -3852,8 +4367,7 @@ void c_plugin::game_loop()
 					bs->Read(&url[0], urlLen);
 				}
 				if (!url.empty()) {
-					CreateDirectoryA("omp-dx", NULL);
-					CreateDirectoryA("omp-dx\\sounds", NULL);
+					EnsureClientDataSubdir("sounds");
 					
 					uint32_t hash = 2166136261u;
 					for (char c : url) {
@@ -3864,7 +4378,7 @@ void c_plugin::game_loop()
 					if (url.find(".mp3") != std::string::npos) ext = ".mp3";
 					else if (url.find(".ogg") != std::string::npos) ext = ".ogg";
 					
-					std::string localPath = "omp-dx\\sounds\\" + std::to_string(hash) + ext;
+					std::string localPath = ClientDataPath("sounds\\" + std::to_string(hash) + ext);
 					DWORD fileAttr = GetFileAttributesA(localPath.c_str());
 					if (fileAttr != INVALID_FILE_ATTRIBUTES && !(fileAttr & FILE_ATTRIBUTE_DIRECTORY)) {
 						LogToFile("RPC Subtype 36 (PlaySound): Local sound file already exists, playing.");
@@ -3875,6 +4389,26 @@ void c_plugin::game_loop()
 						soundThread.detach();
 					}
 				}
+			}
+			else if (subtype == 37) { // Transfer and load server-side font
+				std::string fontFamily;
+				std::string fileName;
+				uint32_t byteCount = 0;
+				uint32_t hash = 0;
+				if (!ReadBoundedString(bs, fontFamily, 64, false) || !ReadBoundedString(bs, fileName, 128, false) ||
+					!bs->Read(byteCount) || !bs->Read(hash) ||
+					byteCount < 1024 || byteCount > 8 * 1024 * 1024 ||
+					bs->GetNumberOfUnreadBits() < static_cast<int>(byteCount) * 8) {
+					LogToFile("RPC Subtype 37 (Transfer Font): Rejected malformed font transfer.");
+					return false;
+				}
+
+				std::vector<uint8_t> fontData(byteCount);
+				if (!bs->Read(reinterpret_cast<char*>(fontData.data()), static_cast<int>(byteCount))) {
+					LogToFile("RPC Subtype 37 (Transfer Font): Failed to read font bytes.");
+					return false;
+				}
+				LoadTransferredFont(fontFamily, fileName, fontData, hash);
 			}
 
 
@@ -3951,7 +4485,6 @@ void c_plugin::attach_console()
 
 c_plugin::c_plugin(HMODULE hmodule) : hmodule(hmodule)
 {
-	LogToFile("Plugin loaded via DLL_PROCESS_ATTACH.");
 	game_loop_hook.add(&c_plugin::game_loop);
 }
 

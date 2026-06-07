@@ -1,0 +1,13 @@
+Bundled fonts:
+
+- FontAwesome.ttf: Font Awesome 4.7 webfont, distributed under the SIL Open Font License 1.1.
+  Source: https://fontawesome.com/v4/
+
+- Outfit.ttf: Outfit from Google Fonts, distributed under the SIL Open Font License 1.1.
+  Source: https://fonts.google.com/specimen/Outfit
+
+- Poppins.ttf: Poppins from Google Fonts, distributed under the SIL Open Font License 1.1.
+  Source: https://fonts.google.com/specimen/Poppins
+
+- JetBrainsMono.ttf: JetBrains Mono from Google Fonts, distributed under the SIL Open Font License 1.1.
+  Source: https://fonts.google.com/specimen/JetBrains+Mono
