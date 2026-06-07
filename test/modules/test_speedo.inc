@@ -33,7 +33,7 @@ public UpdateSpeedometer(playerid)
 		{
 			VehicleFuel[playerid] = 0.0;
 			VehicleEngine[playerid] = false;
-			DX_DrawButton(playerid, UI_ENGINE_BTN, sw - 375.0, sh - 150.0, 100.0, 30.0, 0xFF33333F, 0.55, "ENGINE: OFF", "Outfit-Bold");
+			DX_DrawButton(playerid, UI_ENGINE_BTN, sw - 375.0, sh - 150.0, 100.0, 30.0, 0xFF33333F, 0.55, "ENGINE: OFF", "Outfit");
 			SendClientMessage(playerid, -1, "engine stopped. no fuel left");
 		}
 
@@ -69,7 +69,7 @@ public UpdateSpeedometer(playerid)
 	if (speed < 10.0) tx = cx - 5.0;
 	else if (speed < 100.0) tx = cx - 11.0;
 	else tx = cx - 17.0;
-	DX_DrawText(playerid, UI_SPEED_TEXT, speedStr, tx, cy - 10.0, 0xFFFFFFFF, 1.0, "Outfit-Bold");
+	DX_DrawText(playerid, UI_SPEED_TEXT, speedStr, tx, cy - 10.0, 0xFFFFFFFF, 1.0, "Outfit");
 
 	// 3. Update Fuel value bar
 	new Float:fuelX = sw - 260.0;
@@ -144,25 +144,25 @@ stock Speedo_Toggle(playerid)
 		
 		// Outer Speed dial circle
 		DX_DrawCircle(playerid, UI_SPEED_DIAL, cx, cy, radius, 0xFF4A4A5A, 4.0);
-		DX_DrawText(playerid, UI_SPEED_UNIT, "KM/H", cx - 16.0, cy + 18.0, 0xCC8E8E93, 0.5, "Outfit-Bold");
+		DX_DrawText(playerid, UI_SPEED_UNIT, "KM/H", cx - 16.0, cy + 18.0, 0xCC8E8E93, 0.5, "Outfit");
 
 		// Control Buttons
 		new btnColorEng = VehicleEngine[playerid] ? 0xFF2ECC71 : 0xFF33333F;
 		new btnColorLgt = VehicleLights[playerid] ? 0xFF3498DB : 0xFF33333F;
 		new btnColorLck = VehicleLock[playerid] ? 0xFFE67E22 : 0xFF33333F;
 
-		DX_DrawButton(playerid, UI_ENGINE_BTN, sw - 375.0, sh - 150.0, 100.0, 30.0, btnColorEng, 0.55, VehicleEngine[playerid] ? "ENGINE: ON" : "ENGINE: OFF", "Outfit-Bold");
-		DX_DrawButton(playerid, UI_LIGHTS_BTN, sw - 375.0, sh - 110.0, 100.0, 30.0, btnColorLgt, 0.55, VehicleLights[playerid] ? "LIGHTS: ON" : "LIGHTS: OFF", "Outfit-Bold");
-		DX_DrawButton(playerid, UI_LOCK_BTN, sw - 375.0, sh - 70.0, 100.0, 30.0, btnColorLck, 0.55, VehicleLock[playerid] ? "VEH_DOOR: LOCK" : "VEH_DOOR: OPEN", "Outfit-Bold");
+		DX_DrawButton(playerid, UI_ENGINE_BTN, sw - 375.0, sh - 150.0, 100.0, 30.0, btnColorEng, 0.55, VehicleEngine[playerid] ? "ENGINE: ON" : "ENGINE: OFF", "Outfit");
+		DX_DrawButton(playerid, UI_LIGHTS_BTN, sw - 375.0, sh - 110.0, 100.0, 30.0, btnColorLgt, 0.55, VehicleLights[playerid] ? "LIGHTS: ON" : "LIGHTS: OFF", "Outfit");
+		DX_DrawButton(playerid, UI_LOCK_BTN, sw - 375.0, sh - 70.0, 100.0, 30.0, btnColorLck, 0.55, VehicleLock[playerid] ? "VEH_DOOR: LOCK" : "VEH_DOOR: OPEN", "Outfit");
 
 		// Fuel status
 		new Float:fuelX = sw - 260.0;
 		new Float:fuelY = sh - 130.0;
-		DX_DrawText(playerid, UI_FUEL_LABEL, "FUEL LEVEL:", fuelX, fuelY - 20.0, 0xFF8E8E93, 0.55, "Outfit-Bold");
+		DX_DrawText(playerid, UI_FUEL_LABEL, "FUEL LEVEL:", fuelX, fuelY - 20.0, 0xFF8E8E93, 0.55, "Outfit");
 		DX_DrawLine(playerid, UI_FUEL_BG, fuelX, fuelY, fuelX + 90.0, fuelY, 8.0, 0xFF2A2A33);
 
 		// Seatbelt
-		DX_DrawText(playerid, UI_SEATBELT_LABEL, "BELT:", sw - 260.0, sh - 105.0, 0xFF8E8E93, 0.55, "Outfit-Bold");
+		DX_DrawText(playerid, UI_SEATBELT_LABEL, "BELT:", sw - 260.0, sh - 105.0, 0xFF8E8E93, 0.55, "Outfit");
 
 		// Start timer for updates
 		SpeedometerTimer[playerid] = SetTimerEx("UpdateSpeedometer", 100, true, "i", playerid);
@@ -182,7 +182,7 @@ stock bool:Speedo_OnClick(playerid, elementid)
 		{
 			VehicleEngine[playerid] = !VehicleEngine[playerid];
 			new btnColor = VehicleEngine[playerid] ? 0xFF2ECC71 : 0xFF33333F;
-			DX_DrawButton(playerid, UI_ENGINE_BTN, sw - 375.0, sh - 150.0, 100.0, 30.0, btnColor, 0.55, VehicleEngine[playerid] ? "ENGINE: ON" : "ENGINE: OFF", "Outfit-Bold");
+			DX_DrawButton(playerid, UI_ENGINE_BTN, sw - 375.0, sh - 150.0, 100.0, 30.0, btnColor, 0.55, VehicleEngine[playerid] ? "ENGINE: ON" : "ENGINE: OFF", "Outfit");
 			SendClientMessage(playerid, -1, VehicleEngine[playerid] ? "engine started" : "engine stopped");
 			return true;
 		}
@@ -190,7 +190,7 @@ stock bool:Speedo_OnClick(playerid, elementid)
 		{
 			VehicleLights[playerid] = !VehicleLights[playerid];
 			new btnColor = VehicleLights[playerid] ? 0xFF3498DB : 0xFF33333F;
-			DX_DrawButton(playerid, UI_LIGHTS_BTN, sw - 375.0, sh - 110.0, 100.0, 30.0, btnColor, 0.55, VehicleLights[playerid] ? "LIGHTS: ON" : "LIGHTS: OFF", "Outfit-Bold");
+			DX_DrawButton(playerid, UI_LIGHTS_BTN, sw - 375.0, sh - 110.0, 100.0, 30.0, btnColor, 0.55, VehicleLights[playerid] ? "LIGHTS: ON" : "LIGHTS: OFF", "Outfit");
 			SendClientMessage(playerid, -1, VehicleLights[playerid] ? "lights on" : "lights off");
 			return true;
 		}
@@ -198,7 +198,7 @@ stock bool:Speedo_OnClick(playerid, elementid)
 		{
 			VehicleLock[playerid] = !VehicleLock[playerid];
 			new btnColor = VehicleLock[playerid] ? 0xFFE67E22 : 0xFF33333F;
-			DX_DrawButton(playerid, UI_LOCK_BTN, sw - 375.0, sh - 70.0, 100.0, 30.0, btnColor, 0.55, VehicleLock[playerid] ? "VEH_DOOR: LOCK" : "VEH_DOOR: OPEN", "Outfit-Bold");
+			DX_DrawButton(playerid, UI_LOCK_BTN, sw - 375.0, sh - 70.0, 100.0, 30.0, btnColor, 0.55, VehicleLock[playerid] ? "VEH_DOOR: LOCK" : "VEH_DOOR: OPEN", "Outfit");
 			SendClientMessage(playerid, -1, VehicleLock[playerid] ? "doors locked" : "doors unlocked");
 			return true;
 		}

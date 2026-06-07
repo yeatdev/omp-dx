@@ -30,14 +30,14 @@ stock Features_Show(playerid)
 
 	// Header
 	DX_DrawRectangle(playerid, UI_NEW_HEADER, 0.0, 0.0, w, 50.0, 0xFF141724);
-	DX_DrawText(playerid, UI_NEW_TITLE, "{3498DB}NEW {FFFFFF}ADVANCED FEATURES DEMO", 20.0, 14.0, 0xFFFFFFFF, 0.8, "Outfit-Bold");
+	DX_DrawText(playerid, UI_NEW_TITLE, "{3498DB}NEW {FFFFFF}ADVANCED FEATURES DEMO", 20.0, 14.0, 0xFFFFFFFF, 0.8, "Outfit");
 
 	// Close Button
-	DX_DrawButton(playerid, UI_NEW_CLOSE, w - 80.0, 10.0, 60.0, 30.0, 0xFFE74C3C, 0.55, "CLOSE", "Outfit-Bold");
+	DX_DrawButton(playerid, UI_NEW_CLOSE, w - 80.0, 10.0, 60.0, 30.0, 0xFFE74C3C, 0.55, "CLOSE", "Outfit");
 
 	// --- Left Column ---
 	// Color Picker spectrum
-	DX_DrawText(playerid, UI_NEW_COLOR_LBL, "COLOR SPECTRUM PICKER:", 20.0, 70.0, 0xFF8E8E93, 0.6, "Outfit-Bold");
+	DX_DrawText(playerid, UI_NEW_COLOR_LBL, "COLOR SPECTRUM PICKER:", 20.0, 70.0, 0xFF8E8E93, 0.6, "Outfit");
 	
 	new pickerColor = 0xFFFFFFFF;
 	DX_GetColorPickerColor(playerid, UI_NEW_COLOR_PICKER, pickerColor);
@@ -47,48 +47,48 @@ stock Features_Show(playerid)
 	DX_DrawRectangle(playerid, UI_NEW_COLOR_PREVIEW, 20.0, 185.0, 160.0, 20.0, pickerColor);
 
 	// Vector Icons demo
-	DX_DrawText(playerid, UI_NEW_ICON_LBL, "VECTOR ICONS & SOUND FX:", 20.0, 220.0, 0xFF8E8E93, 0.6, "Outfit-Bold");
+	DX_DrawText(playerid, UI_NEW_ICON_LBL, "VECTOR ICONS & SOUND FX:", 20.0, 220.0, 0xFF8E8E93, 0.6, "Outfit");
 	DX_DrawIcon(playerid, UI_NEW_ICON_HEART, 20.0, 245.0, 28.0, "heart", 0xFFE74C3C);
 	DX_DrawIcon(playerid, UI_NEW_ICON_STAR, 60.0, 245.0, 28.0, "star", 0xFFF1C40F);
 	DX_DrawIcon(playerid, UI_NEW_ICON_MUSIC, 100.0, 245.0, 28.0, "music", 0xFF2ECC71);
 	DX_DrawIcon(playerid, UI_NEW_ICON_BELL, 140.0, 245.0, 28.0, "bell", 0xFF9B59B6);
 
 	// Sound Effect Button
-	DX_DrawButton(playerid, UI_NEW_PLAY_SOUND, 20.0, 290.0, 160.0, 30.0, 0xFF34495E, 0.55, "PLAY SOUND FX", "Outfit-Bold");
+	DX_DrawButton(playerid, UI_NEW_PLAY_SOUND, 20.0, 290.0, 160.0, 30.0, 0xFF34495E, 0.55, "PLAY SOUND FX", "Outfit");
 
 	// --- Middle Column ---
 	// Secure Password Input
-	DX_DrawText(playerid, UI_NEW_PASS_LBL, "SECURE PASSWORD FIELD:", 210.0, 70.0, 0xFF8E8E93, 0.6, "Outfit-Bold");
-	DX_DrawInput(playerid, UI_NEW_PASS_INPUT, 210.0, 95.0, 210.0, 30.0, 0xFFE74C3C, 0.55, "password123", "Enter password...", "Outfit-Bold");
+	DX_DrawText(playerid, UI_NEW_PASS_LBL, "SECURE PASSWORD FIELD:", 210.0, 70.0, 0xFF8E8E93, 0.6, "Outfit");
+	DX_DrawInput(playerid, UI_NEW_PASS_INPUT, 210.0, 95.0, 210.0, 30.0, 0xFFE74C3C, 0.55, "password123", "Enter password...", "Outfit");
 	DX_SetInputPassword(playerid, UI_NEW_PASS_INPUT, true);
 
 	// Slider & Circular Progress Bar
-	DX_DrawText(playerid, UI_NEW_SLIDER_LBL, "PROGRESS SYNC (SLIDER):", 210.0, 145.0, 0xFF8E8E93, 0.6, "Outfit-Bold");
+	DX_DrawText(playerid, UI_NEW_SLIDER_LBL, "PROGRESS SYNC (SLIDER):", 210.0, 145.0, 0xFF8E8E93, 0.6, "Outfit");
 
 	new Float:slideVal = 0.5;
 	if (!DX_GetSliderValue(playerid, UI_NEW_SLIDER, slideVal))
 	{
 		slideVal = 0.5;
 	}
-	DX_DrawSlider(playerid, UI_NEW_SLIDER, 210.0, 175.0, 160.0, 20.0, 0xFF3498DB, slideVal, "Outfit-Bold");
+	DX_DrawSlider(playerid, UI_NEW_SLIDER, 210.0, 175.0, 160.0, 20.0, 0xFF3498DB, slideVal, "Outfit");
 
 	new valText[32];
 	format(valText, sizeof(valText), "%d%%", floatround(slideVal * 100.0));
-	DX_DrawText(playerid, UI_NEW_SLIDER_VAL, valText, 380.0, 173.0, 0xFFFFFFFF, 0.6, "Outfit-Bold");
+	DX_DrawText(playerid, UI_NEW_SLIDER_VAL, valText, 380.0, 173.0, 0xFFFFFFFF, 0.6, "Outfit");
 
 	// Circular Progress Bar next to the slider
-	DX_DrawText(playerid, UI_NEW_CIRC_LBL, "RADIAL PROGRESS:", 210.0, 215.0, 0xFF8E8E93, 0.6, "Outfit-Bold");
+	DX_DrawText(playerid, UI_NEW_CIRC_LBL, "RADIAL PROGRESS:", 210.0, 215.0, 0xFF8E8E93, 0.6, "Outfit");
 	DX_DrawCircularProgress(playerid, UI_NEW_CIRC_PROGRESS, 380.0, 240.0, 20.0, slideVal, 0xFF3498DB, 5.0);
 
 	// Vector Graph
-	DX_DrawText(playerid, UI_NEW_GRAPH_LBL, "REAL-TIME VECTOR CHART:", 210.0, 275.0, 0xFF8E8E93, 0.6, "Outfit-Bold");
+	DX_DrawText(playerid, UI_NEW_GRAPH_LBL, "REAL-TIME VECTOR CHART:", 210.0, 275.0, 0xFF8E8E93, 0.6, "Outfit");
 	new Float:graphVals[6] = {10.0, 45.0, 20.0, 80.0, 30.0, 95.0};
 	graphVals[4] = slideVal * 100.0;
 	DX_DrawGraph(playerid, UI_NEW_GRAPH, 210.0, 300.0, 210.0, 85.0, 0xFF2ECC71, graphVals, 6, 100.0);
 
 	// --- Right Column ---
 	// Scroll Container
-	DX_DrawText(playerid, UI_NEW_SCROLL_LBL, "SCROLL CONTAINER:", 450.0, 70.0, 0xFF8E8E93, 0.6, "Outfit-Bold");
+	DX_DrawText(playerid, UI_NEW_SCROLL_LBL, "SCROLL CONTAINER:", 450.0, 70.0, 0xFF8E8E93, 0.6, "Outfit");
 	
 	new Float:scrollVal = 0.0;
 	DX_GetScrollContainerVal(playerid, UI_NEW_SCROLL_CONT, scrollVal);
@@ -100,7 +100,7 @@ stock Features_Show(playerid)
 	DX_DrawRectangle(playerid, UI_NEW_SCROLL_ITEM3, 10.0, 190.0, 130.0, 80.0, 0xFFE74C3C);
 
 	// Textured Progress Bar
-	DX_DrawText(playerid, UI_NEW_TEX_BAR_LBL, "TEXTURED PROGRESS BAR:", 450.0, 275.0, 0xFF8E8E93, 0.6, "Outfit-Bold");
+	DX_DrawText(playerid, UI_NEW_TEX_BAR_LBL, "TEXTURED PROGRESS BAR:", 450.0, 275.0, 0xFF8E8E93, 0.6, "Outfit");
 	// Textured bar synced with slider progress
 	DX_DrawTexturedProgressBar(playerid, UI_NEW_TEX_BAR, 450.0, 300.0, 170.0, 25.0, "https://open.mp/favicon.ico", "https://open.mp/favicon.ico", slideVal, 0xFFFFFFFF);
 

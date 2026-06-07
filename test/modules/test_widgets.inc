@@ -32,64 +32,64 @@ stock Widgets_Show(playerid)
 	DX_DrawRectangle(playerid, UI_WIDGET_SIDEBAR, 0.0, 0.0, 4.0, h, 0xFF9B59B6);
 	
 	// Rich text rendering with colors
-	DX_DrawText(playerid, UI_WIDGET_TITLE, "{9B59B6}INTERACTIVE {FFFFFF}WIDGETS DEMO", 20.0, 14.0, 0xFFFFFFFF, 0.8, "Outfit-Bold");
+	DX_DrawText(playerid, UI_WIDGET_TITLE, "{9B59B6}INTERACTIVE {FFFFFF}WIDGETS DEMO", 20.0, 14.0, 0xFFFFFFFF, 0.8, "Outfit");
 
 	// Close Button
-	DX_DrawButton(playerid, UI_WIDGET_CLOSE, w - 80.0, 10.0, 60.0, 30.0, 0xFFE74C3C, 0.55, "CLOSE", "Outfit-Bold");
+	DX_DrawButton(playerid, UI_WIDGET_CLOSE, w - 80.0, 10.0, 60.0, 30.0, 0xFFE74C3C, 0.55, "CLOSE", "Outfit");
 
 	// ---- Section 1: Slider (Volume Control) ----
 	new Float:secY = 70.0;
-	DX_DrawText(playerid, UI_WIDGET_SLIDER_LBL, "MASTER VOLUME:", 25.0, secY, 0xFF8E8E93, 0.6, "Outfit-Bold");
+	DX_DrawText(playerid, UI_WIDGET_SLIDER_LBL, "MASTER VOLUME:", 25.0, secY, 0xFF8E8E93, 0.6, "Outfit");
 	
 	new Float:slideVal = 0.75;
 	DX_GetSliderValue(playerid, UI_WIDGET_SLIDER, slideVal);
-	DX_DrawSlider(playerid, UI_WIDGET_SLIDER, 25.0, secY + 28.0, 300.0, 20.0, 0xFF3498DB, slideVal, "Outfit-Bold");
+	DX_DrawSlider(playerid, UI_WIDGET_SLIDER, 25.0, secY + 28.0, 300.0, 20.0, 0xFF3498DB, slideVal, "Outfit");
 	
 	new valText[32];
 	format(valText, sizeof(valText), "%d%%", floatround(slideVal * 100.0));
-	DX_DrawText(playerid, UI_WIDGET_SLIDER_VAL, valText, 340.0, secY + 25.0, 0xFFFFFFFF, 0.6, "Outfit-Bold");
+	DX_DrawText(playerid, UI_WIDGET_SLIDER_VAL, valText, 340.0, secY + 25.0, 0xFFFFFFFF, 0.6, "Outfit");
 
 	// ---- Section 2: ComboBox (Graphics Quality) ----
 	secY += 75.0;
-	DX_DrawText(playerid, UI_WIDGET_COMBO_LBL, "GRAPHICS QUALITY:", 25.0, secY, 0xFF8E8E93, 0.6, "Outfit-Bold");
+	DX_DrawText(playerid, UI_WIDGET_COMBO_LBL, "GRAPHICS QUALITY:", 25.0, secY, 0xFF8E8E93, 0.6, "Outfit");
 	
 	new comboIdx = 2;
 	DX_GetComboBoxIndex(playerid, UI_WIDGET_COMBO, comboIdx);
-	DX_DrawComboBox(playerid, UI_WIDGET_COMBO, 25.0, secY + 28.0, 250.0, 30.0, 0xFF2C3E50, comboIdx, "Low;Medium;High;Ultra;Custom", "Outfit-Bold");
+	DX_DrawComboBox(playerid, UI_WIDGET_COMBO, 25.0, secY + 28.0, 250.0, 30.0, 0xFF2C3E50, comboIdx, "Low;Medium;High;Ultra;Custom", "Outfit");
 	
 	new comboText[64];
 	new const qualityNames[][] = {"Low", "Medium", "High", "Ultra", "Custom"};
 	format(comboText, sizeof(comboText), "{2ECC71}%s settings active", qualityNames[comboIdx]);
-	DX_DrawText(playerid, UI_WIDGET_COMBO_VAL, comboText, 290.0, secY + 35.0, 0xFF2ECC71, 0.55, "Outfit-Bold");
+	DX_DrawText(playerid, UI_WIDGET_COMBO_VAL, comboText, 290.0, secY + 35.0, 0xFF2ECC71, 0.55, "Outfit");
 
 	// ---- Section 3: ListView (Connected Players) ----
 	secY += 80.0;
-	DX_DrawText(playerid, UI_WIDGET_LIST_LBL, "ONLINE PLAYERS:", 25.0, secY, 0xFF8E8E93, 0.6, "Outfit-Bold");
+	DX_DrawText(playerid, UI_WIDGET_LIST_LBL, "ONLINE PLAYERS:", 25.0, secY, 0xFF8E8E93, 0.6, "Outfit");
 	
 	new listIdx = 0;
 	DX_GetListViewIndex(playerid, UI_WIDGET_LIST, listIdx);
-	DX_DrawListView(playerid, UI_WIDGET_LIST, 25.0, secY + 28.0, 250.0, 120.0, 0xFF1A1A2E, listIdx, "Player_Alpha;Player_Beta;Player_Gamma;Player_Delta;Player_Epsilon;Player_Zeta;Player_Eta;Player_Theta", "Outfit-Bold");
+	DX_DrawListView(playerid, UI_WIDGET_LIST, 25.0, secY + 28.0, 250.0, 120.0, 0xFF1A1A2E, listIdx, "Player_Alpha;Player_Beta;Player_Gamma;Player_Delta;Player_Epsilon;Player_Zeta;Player_Eta;Player_Theta", "Outfit");
 
 	// ---- Section 4: Secure Password Input ----
-	DX_DrawText(playerid, UI_WIDGET_PASS_LBL, "SECURE PASSWORD:", 300.0, 70.0, 0xFF8E8E93, 0.6, "Outfit-Bold");
-	DX_DrawInput(playerid, UI_WIDGET_PASS_INPUT, 300.0, 95.0, 220.0, 30.0, 0xFFE74C3C, 0.55, "qwerty", "Enter password...", "Outfit-Bold");
+	DX_DrawText(playerid, UI_WIDGET_PASS_LBL, "SECURE PASSWORD:", 300.0, 70.0, 0xFF8E8E93, 0.6, "Outfit");
+	DX_DrawInput(playerid, UI_WIDGET_PASS_INPUT, 300.0, 95.0, 220.0, 30.0, 0xFFE74C3C, 0.55, "qwerty", "Enter password...", "Outfit");
 	DX_SetInputPassword(playerid, UI_WIDGET_PASS_INPUT, true);
 
 	// ---- Section 5: Circular Progress Bar ----
-	DX_DrawText(playerid, UI_WIDGET_CIRC_LBL, "RADIAL PROGRESS:", 300.0, 145.0, 0xFF8E8E93, 0.6, "Outfit-Bold");
+	DX_DrawText(playerid, UI_WIDGET_CIRC_LBL, "RADIAL PROGRESS:", 300.0, 145.0, 0xFF8E8E93, 0.6, "Outfit");
 	DX_DrawCircularProgress(playerid, UI_WIDGET_CIRC_PROGRESS, 410.0, 190.0, 25.0, slideVal, 0xFF3498DB, 6.0);
 
 	// ---- Section 6: TabPanel (Settings Categories) ----
-	DX_DrawText(playerid, UI_WIDGET_TAB_LBL, "SETTINGS TABS:", 300.0, 245.0, 0xFF8E8E93, 0.6, "Outfit-Bold");
+	DX_DrawText(playerid, UI_WIDGET_TAB_LBL, "SETTINGS TABS:", 300.0, 245.0, 0xFF8E8E93, 0.6, "Outfit");
 	
 	new tabIdx = 0;
 	DX_GetTabActive(playerid, UI_WIDGET_TAB, tabIdx);
-	DX_DrawTabPanel(playerid, UI_WIDGET_TAB, 300.0, 273.0, 220.0, 130.0, 0xFF1A1A2E, tabIdx, "General;Audio;Video", "Outfit-Bold");
+	DX_DrawTabPanel(playerid, UI_WIDGET_TAB, 300.0, 273.0, 220.0, 130.0, 0xFF1A1A2E, tabIdx, "General;Audio;Video", "Outfit");
 	
 	new tabText[64];
 	new const tabNames[][] = {"General", "Audio", "Video"};
 	format(tabText, sizeof(tabText), "Tab: {3498DB}%s settings active", tabNames[tabIdx]);
-	DX_DrawText(playerid, UI_WIDGET_TAB_CONTENT, tabText, 310.0, 320.0, 0xFFFFFFFF, 0.55, "Outfit-Bold");
+	DX_DrawText(playerid, UI_WIDGET_TAB_CONTENT, tabText, 310.0, 320.0, 0xFFFFFFFF, 0.55, "Outfit");
 
 	// Parenting tree
 	DX_SetParent(playerid, UI_WIDGET_SHADOW, UI_WIDGET_BG);

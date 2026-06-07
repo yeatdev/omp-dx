@@ -39,8 +39,8 @@ public OnPlayerSpawn(playerid)
 {
 	SendClientMessage(playerid, -1, "speedo and dash loaded. use /dxspeed or /dxshow");
 	
-	// Load premium Outfit font asynchronously
-	DX_LoadFont(playerid, "Outfit-Bold", "https://raw.githubusercontent.com/google/fonts/main/ofl/outfit/Outfit-Bold.ttf");
+	// Outfit is bundled in the client-side omp-dx/fonts folder and also loaded by default.
+	DX_LoadFont(playerid, "Outfit", "Outfit.ttf");
 	return 1;
 }
 

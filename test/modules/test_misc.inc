@@ -71,7 +71,7 @@ stock Misc_DrawShapes2Test(playerid)
 
 	// 2. Rounded rectangle inside card
 	DX_DrawRoundedRectangle(playerid, 401, cx - 200.0, cy - 150.0, 400.0, 300.0, 15.0, 0xFA1E1E24);
-	DX_DrawText(playerid, 402, "ADVANCED VECTOR SHAPES", cx - 140.0, cy - 120.0, 0xFFFFFFFF, 0.75, "Outfit-Bold");
+	DX_DrawText(playerid, 402, "ADVANCED VECTOR SHAPES", cx - 140.0, cy - 120.0, 0xFFFFFFFF, 0.75, "Outfit");
 
 	// 3. GPS Marker style hardware triangle
 	DX_DrawTriangle(playerid, 403, cx, cy - 30.0, cx - 25.0, cy + 25.0, cx + 25.0, cy + 25.0, 0xFF3498DB);
@@ -82,7 +82,7 @@ stock Misc_DrawShapes2Test(playerid)
 
 	// Rounded button
 	DX_DrawRoundedRectangle(playerid, 406, cx - 60.0, cy + 110.0, 120.0, 30.0, 8.0, 0xFFE67E22);
-	DX_DrawText(playerid, 407, "SUBMIT", cx - 22.0, cy + 118.0, 0xFFFFFFFF, 0.5, "Outfit-Bold");
+	DX_DrawText(playerid, 407, "SUBMIT", cx - 22.0, cy + 118.0, 0xFFFFFFFF, 0.5, "Outfit");
 
 	SendClientMessage(playerid, -1, "shapes demo active. type /dxhideall2 to hide");
 }
