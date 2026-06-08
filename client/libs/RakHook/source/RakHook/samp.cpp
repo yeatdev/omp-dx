@@ -9,7 +9,9 @@ constexpr auto module_name = "samp.dll";
 #endif
 
 std::uintptr_t rakhook::samp_addr(std::uintptr_t offset) {
-    static auto samp_module = reinterpret_cast<std::uintptr_t>(GetModuleHandle(module_name));
+    static std::uintptr_t samp_module = 0;
+    if (!samp_module)
+        samp_module = reinterpret_cast<std::uintptr_t>(GetModuleHandle(module_name));
     return samp_module + offset;
 }
 
@@ -18,7 +20,10 @@ rakhook::samp_ver rakhook::samp_version() {
     static samp_ver v    = samp_ver::unknown;
 
     if (!init) {
-        std::uintptr_t base     = samp_addr();
+        const std::uintptr_t base = samp_addr();
+        if (!base)
+            return samp_ver::unknown;
+
         auto          *ntheader = reinterpret_cast<IMAGE_NT_HEADERS *>(base + reinterpret_cast<IMAGE_DOS_HEADER *>(base)->e_lfanew);
         std::uintptr_t ep       = ntheader->OptionalHeader.AddressOfEntryPoint;
         switch (ep) {

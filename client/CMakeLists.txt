@@ -12,11 +12,9 @@ option(OMP_DX_DEBUG_SPAM_TEST "Enable F10 client-side random DX event spam test.
 add_compile_definitions(__BITSTREAM_NATIVE_END)
 
 add_subdirectory(libs/rakhook)
-add_subdirectory(libs/samp-api)
 
 include_directories(libs/rakhook/lib/minhook/include)
 include_directories(libs/rakhook/include)
-include_directories(libs/samp-api/include)
 
 add_library(${PROJECT_NAME} SHARED)
 target_sources(${PROJECT_NAME} PRIVATE
@@ -33,7 +31,16 @@ target_compile_features(${PROJECT_NAME} PUBLIC cxx_std_20)
 if(OMP_DX_DEBUG_SPAM_TEST)
 	target_compile_definitions(${PROJECT_NAME} PRIVATE OMP_DX_DEBUG_SPAM_TEST)
 endif()
-target_link_libraries(${PROJECT_NAME} PUBLIC d3d9 bcrypt minhook rakhook sampapi Threads::Threads)
+target_link_libraries(${PROJECT_NAME} PUBLIC d3d9 bcrypt minhook rakhook Threads::Threads)
+
+add_library(omp-dx-dinput8-loader SHARED
+	source/dinput8_proxy.cpp
+	source/dinput8_proxy.def
+)
+set_target_properties(omp-dx-dinput8-loader
+	PROPERTIES
+	OUTPUT_NAME dinput8
+)
 
 add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
 	COMMAND ${CMAKE_COMMAND} -E copy_directory

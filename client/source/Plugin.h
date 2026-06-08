@@ -169,6 +169,7 @@ class c_plugin
 		static void attach_console();
 
 		static void game_loop();
+		static void shutdown_for_unload();
 		static c_hook<void(*)()> game_loop_hook;
 	private:
 		HMODULE hmodule;

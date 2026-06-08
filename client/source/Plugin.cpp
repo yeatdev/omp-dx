@@ -1,10 +1,10 @@
 #include "Plugin.h"
 #include "AsyncLogger.h"
 
-#include <sampapi/CChat.h>
 #include <RakNet/PacketEnumerations.h>
 #include <RakNet/StringCompressor.h>
 #include <RakNet/BitStream.h>
+#include <RakHook/samp.hpp>
 
 #include <fstream>
 #include <iomanip>
@@ -15,8 +15,6 @@
 #include <array>
 #include <atomic>
 #include <thread>
-
-namespace samp = sampapi::v03dl;
 
 #include <bcrypt.h>
 #pragma comment(lib, "bcrypt.lib")
@@ -50,6 +48,9 @@ std::map<std::string, DXFont> g_dxFonts;
 std::mutex g_fontMutex;
 std::vector<std::string> g_loadedFontPaths;
 std::set<std::string> g_loadedFontFamilies;
+VTableHookManager* g_vmtHooks = nullptr;
+std::atomic_bool g_unloading = false;
+std::atomic_bool g_exitRequested = false;
 
 #include <wininet.h>
 #pragma comment(lib, "wininet.lib")
@@ -70,6 +71,18 @@ float GetElementAlphaMultiplier(const DXElement& elem, DWORD now);
 DWORD ModulateAlpha(DWORD color, float multiplier);
 void CleanupBlurTextures();
 DWORD GetHueColor(float rx);
+
+const char* GetSampVersionName(rakhook::samp_ver version) {
+	switch (version) {
+	case rakhook::samp_ver::v037r1: return "0.3.7-R1";
+	case rakhook::samp_ver::v037r2: return "0.3.7-R2";
+	case rakhook::samp_ver::v037r31: return "0.3.7-R3-1";
+	case rakhook::samp_ver::v037r4: return "0.3.7-R4";
+	case rakhook::samp_ver::v037r5: return "0.3.7-R5";
+	case rakhook::samp_ver::v03dlr1: return "0.3.DL-R1";
+	default: return "unknown";
+	}
+}
 
 std::string GetClientBaseDirectory() {
 	char modulePath[MAX_PATH] {};
@@ -183,8 +196,8 @@ struct FontVertex {
 };
 
 void LogToFile(const std::string& text) {
-	static AsyncLogger logger(ClientPath("dx_client_log.txt").c_str());
-	logger.log(text);
+	static AsyncLogger* logger = new AsyncLogger(ClientPath("dx_client_log.txt").c_str());
+	logger->log(text);
 }
 
 bool ReadBoundedString(RakNet::BitStream* bs, std::string& output, uint16_t maxLength, bool allowEmpty = true) {
@@ -1275,9 +1288,6 @@ void StartDebugDXSpamTest()
 	}
 
 	LogToFile("DebugSpamTest: starting random RPC 192 element-id spam for 3 seconds.");
-	if (samp::RefChat()) {
-		samp::RefChat()->AddMessage(0xFFFFAA00, "OMP-DX debug: random ID spam test started (3 seconds).");
-	}
 
 	std::thread([] {
 		uint32_t seed = GetTickCount() ^ 0xA5A5C3D2u;
@@ -1301,9 +1311,6 @@ void StartDebugDXSpamTest()
 		}
 
 		LogToFile("DebugSpamTest: completed. Sent " + std::to_string(sent) + " random RPC 192 events.");
-		if (samp::RefChat()) {
-			samp::RefChat()->AddMessage(0xFFFFAA00, "OMP-DX debug: random ID spam test completed. Check dx_server_log.txt.");
-		}
 		g_debugSpamRunning = false;
 	}).detach();
 }
@@ -1385,17 +1392,11 @@ void StartDebugDXValidElementSpamTest()
 	DXElementType type = DXElementType::Rectangle;
 	if (!FindDebugSpamTarget(elementId, type)) {
 		LogToFile("DebugValidSpamTest: no interactive DX element found.");
-		if (samp::RefChat()) {
-			samp::RefChat()->AddMessage(0xFFFFAA00, "OMP-DX debug: no interactive DX element found. Open /dxfont first.");
-		}
 		g_debugSpamRunning = false;
 		return;
 	}
 
 	LogToFile("DebugValidSpamTest: starting valid element spam. ElementID=" + std::to_string(elementId));
-	if (samp::RefChat()) {
-		samp::RefChat()->AddMessage(0xFFFFAA00, "OMP-DX debug: valid ID spam test started (3 seconds).");
-	}
 
 	std::thread([elementId, type] {
 		const DWORD start = GetTickCount();
@@ -1411,15 +1412,36 @@ void StartDebugDXValidElementSpamTest()
 		}
 
 		LogToFile("DebugValidSpamTest: completed. Sent " + std::to_string(sent) + " valid-element RPC 192 events.");
-		if (samp::RefChat()) {
-			samp::RefChat()->AddMessage(0xFFFFAA00, "OMP-DX debug: valid ID spam test completed. Check dx_server_log.txt.");
-		}
 		g_debugSpamRunning = false;
 	}).detach();
 }
 #endif
 
 LRESULT CALLBACK hkWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
+	if ((uMsg == WM_SYSCOMMAND && (wParam & 0xFFF0) == SC_CLOSE) ||
+		uMsg == WM_CLOSE ||
+		uMsg == WM_QUERYENDSESSION ||
+		uMsg == WM_ENDSESSION) {
+		if (!g_exitRequested.exchange(true)) {
+			c_plugin::shutdown_for_unload();
+			HANDLE thread = CreateThread(nullptr, 0, [](LPVOID) -> DWORD {
+				Sleep(50);
+				ExitProcess(0);
+				return 0;
+			}, nullptr, 0, nullptr);
+			if (thread) {
+				CloseHandle(thread);
+			} else {
+				ExitProcess(0);
+			}
+		}
+		return uMsg == WM_QUERYENDSESSION ? TRUE : 0;
+	}
+
+	if (g_unloading) {
+		return CallWindowProc(oWndProc, hWnd, uMsg, wParam, lParam);
+	}
+
 #ifdef OMP_DX_DEBUG_SPAM_TEST
 	if (uMsg == WM_KEYDOWN && wParam == VK_F10) {
 		StartDebugDXSpamTest();
@@ -3328,6 +3350,10 @@ void c_plugin::everything()
 
 HRESULT __stdcall hkReset(IDirect3DDevice9* pDevice, D3DPRESENT_PARAMETERS* pp)
 {
+	if (g_unloading) {
+		return oReset(pDevice, pp);
+	}
+
 	LogToFile("hkReset called. Resetting device...");
 	ReleaseFontTextures();
 	CleanupImageTextures();
@@ -3338,6 +3364,10 @@ HRESULT __stdcall hkReset(IDirect3DDevice9* pDevice, D3DPRESENT_PARAMETERS* pp)
 
 HRESULT __stdcall hkPresent(IDirect3DDevice9* pDevice, const RECT* pSourceRect, const RECT* pDestRect, HWND hDestWindowOverride, const RGNDATA* pDirtyRegion)
 {
+	if (g_unloading) {
+		return oPresent(pDevice, pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion);
+	}
+
 	if (!g_bwasInitialized) {
 		LogToFile("hkPresent: Initializing on device 0x" + std::to_string((uintptr_t)pDevice));
 		g_bwasInitialized = true;
@@ -3415,16 +3445,26 @@ void DownloadAndPlaySound(std::string url, std::string localPath) {
 void c_plugin::game_loop()
 {
 	static bool initialized = false;
+	static bool unsupportedVersionLogged = false;
+
+	if (g_unloading) {
+		return game_loop_hook.call_original();
+	}
 
 	if (initialized) {
 		return game_loop_hook.call_original();
 	}
 
-	if (!rakhook::initialize()) {
+	const rakhook::samp_ver sampVersion = rakhook::samp_version();
+	if (sampVersion == rakhook::samp_ver::unknown) {
+		if (!unsupportedVersionLogged && GetModuleHandleA("samp.dll") != nullptr) {
+			LogToFile("Unsupported SA-MP version: network hooks were not installed.");
+			unsupportedVersionLogged = true;
+		}
 		return game_loop_hook.call_original();
 	}
 
-	if (samp::RefChat() == nullptr) {
+	if (!rakhook::initialize()) {
 		return game_loop_hook.call_original();
 	}
 
@@ -3435,16 +3475,16 @@ void c_plugin::game_loop()
 	LoadBundledFont("Poppins", "Poppins.ttf", false);
 	LoadBundledFont("JetBrains Mono", "JetBrainsMono.ttf", false);
 
-	LogToFile("c_plugin::game_loop(): Plugin initialized successfully!");
-	samp::RefChat()->AddMessage(-1, "ASI-Plugin | Custom DX Renderer Active");
+	LogToFile(std::string("c_plugin::game_loop(): Plugin initialized successfully on ") +
+		GetSampVersionName(sampVersion) + ".");
 
 	everything();
 
 	void** vTableDevice = *(void***)(*(DWORD*)DEVICE_PTR);
-	VTableHookManager* vmtHooks = new VTableHookManager(vTableDevice, D3D_VFUNCTIONS);
+	g_vmtHooks = new VTableHookManager(vTableDevice, D3D_VFUNCTIONS);
 
-	oPresent = (_Present)vmtHooks->Hook(PRESENT_INDEX, (void*)hkPresent);
-	oReset = (_Reset)vmtHooks->Hook(RESET_INDEX, (void*)hkReset);
+	oPresent = (_Present)g_vmtHooks->Hook(PRESENT_INDEX, (void*)hkPresent);
+	oReset = (_Reset)g_vmtHooks->Hook(RESET_INDEX, (void*)hkReset);
 
 	LogToFile("vTable hooks installed. Present index: 17, Reset index: 16.");
 
@@ -4472,6 +4512,36 @@ void c_plugin::game_loop()
 	return game_loop_hook.call_original();
 }
 
+void c_plugin::shutdown_for_unload()
+{
+	if (g_unloading.exchange(true)) {
+		return;
+	}
+
+	rakhook::on_receive_rpc.clear();
+	rakhook::on_send_rpc.clear();
+	rakhook::on_receive_packet.clear();
+	rakhook::on_send_packet.clear();
+
+	if (hWnd && oWndProc) {
+		SetWindowLongPtr(hWnd, GWLP_WNDPROC, (LONG_PTR)oWndProc);
+		oWndProc = nullptr;
+	}
+
+	if (g_vmtHooks) {
+		g_vmtHooks->Unhook(PRESENT_INDEX);
+		g_vmtHooks->Unhook(RESET_INDEX);
+		delete g_vmtHooks;
+		g_vmtHooks = nullptr;
+	}
+
+	if (GetModuleHandleA("samp.dll") != nullptr) {
+		rakhook::destroy();
+	}
+
+	game_loop_hook.remove();
+}
+
 void c_plugin::attach_console()
 {
 	if (!AllocConsole())
@@ -4485,7 +4555,9 @@ void c_plugin::attach_console()
 
 c_plugin::c_plugin(HMODULE hmodule) : hmodule(hmodule)
 {
-	game_loop_hook.add(&c_plugin::game_loop);
+	if (!game_loop_hook.add(&c_plugin::game_loop)) {
+		LogToFile(std::string("Failed to install game loop hook: ") + game_loop_hook.status());
+	}
 }
 
 c_plugin::~c_plugin()

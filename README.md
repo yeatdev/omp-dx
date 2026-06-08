@@ -48,9 +48,25 @@ omp-dx/
 To install pre-built release versions of `omp-dx` without compiling from source:
 
 ### 1. Client Setup
-1. Download `omp-dx.asi` from the repository releases section.
-2. Place `omp-dx.asi` into your Grand Theft Auto: San Andreas game root directory.
-3. Ensure you have an ASI Loader (such as `vorbisFile.dll`) in your game directory to automatically load the plugin.
+1. Download `omp-dx.asi`, `dinput8.dll`, and the bundled `omp-dx/` data folder from the repository releases section.
+2. Place `omp-dx.asi` and `dinput8.dll` into your Grand Theft Auto: San Andreas game root directory.
+3. Place the `omp-dx/` folder next to the ASI. By default it contains bundled fonts and `omp-dx/fonts/font-allowlist.txt`.
+4. Start SA-MP normally. The included `dinput8.dll` is a minimal omp-dx loader that loads `omp-dx.asi` and forwards DirectInput calls to the system `dinput8.dll`.
+
+### Client Compatibility
+
+The client is built as a 32-bit GTA:SA US 1.0 ASI and is no longer tied to a single SA-MP client build. SA-MP-specific network offsets are selected at runtime.
+
+| Client version | Status | Notes |
+| --- | --- | --- |
+| SA-MP 0.3.7-R2 | Tested and confirmed | UI rendering, font loading, panel interaction, `/q`, and Windows taskbar close tested. |
+| SA-MP 0.3.7-R5 | Tested and confirmed | UI rendering, font loading, panel interaction, and shutdown tested. |
+| SA-MP 0.3.DL-R1 | Tested and confirmed | UI rendering, bundled font loading, panel interaction, and shutdown tested. |
+| SA-MP 0.3.7-R1 | Supported by runtime detection | Not part of the latest manual test pass. |
+| SA-MP 0.3.7-R3-1 | Supported by runtime detection | Not part of the latest manual test pass. |
+| SA-MP 0.3.7-R4 | Supported by runtime detection | Not part of the latest manual test pass. |
+
+Unknown SA-MP builds are rejected safely; network hooks are not installed if the client version cannot be identified.
 
 ### 2. Server Setup
 1. Download `omp-dx.dll` from the repository releases section.
@@ -81,9 +97,9 @@ The client component hooks the Direct3D9 device context and intercepts input win
      ```
   4. The compiled plugin will be located at `client/bin/Release/omp-dx.asi`.
 * **Deployment:**
-  * Copy `omp-dx.asi` into the Grand Theft Auto: San Andreas root directory.
+  * Copy `omp-dx.asi` and the generated `dinput8.dll` into the Grand Theft Auto: San Andreas root directory.
   * Copy the generated `omp-dx/` folder next to the ASI. By default it contains bundled fonts in `omp-dx/fonts/`.
-  * Ensure a working ASI Loader (e.g., `vorbisFile.dll`) is installed in the game client directory.
+  * Use the bundled `dinput8.dll` loader for release packages. It is intentionally minimal and avoids unloading `omp-dx.asi` during game shutdown.
 
 ### 2. Server-Side Component (`omp-dx.dll`)
 The server component integrates into the open.mp modular host, providing the Pawn API and managing network communications with clients.

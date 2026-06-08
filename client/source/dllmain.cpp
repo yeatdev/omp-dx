@@ -13,7 +13,8 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD dwReason, LPVOID lpReserved)
 			plugin = std::make_unique<c_plugin>(hModule);
 			break;
 		case DLL_PROCESS_DETACH:
-			plugin.reset();
+			c_plugin::shutdown_for_unload();
+			plugin.release();
 			break;
 	}
 	return TRUE;

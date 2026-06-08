@@ -58,6 +58,14 @@ static bool ReadFontTransferFile(const std::string& fileName, std::vector<uint8_
 	return false;
 }
 
+static bool IsBundledClientFont(const std::string& fontFamily, const std::string& fileName)
+{
+	return (fontFamily == "FontAwesome" && fileName == "FontAwesome.ttf") ||
+		(fontFamily == "Outfit" && fileName == "Outfit.ttf") ||
+		(fontFamily == "Poppins" && fileName == "Poppins.ttf") ||
+		(fontFamily == "JetBrains Mono" && fileName == "JetBrainsMono.ttf");
+}
+
 static bool SendDXPayload(IPlayer& player, NetworkBitStream& bs)
 {
 	const int bytes = bs.GetNumberOfBytesUsed();
@@ -251,7 +259,11 @@ void SendDXLoadFont(IPlayer& player, const std::string& fontFamily, const std::s
 
 	NetworkBitStream bs;
 	std::vector<uint8_t> fontData;
-	if (ReadFontTransferFile(fileName, fontData)) {
+	if (IsBundledClientFont(fontFamily, fileName)) {
+		bs.writeUINT8(8); // Subtype 8: Load bundled local font
+		bs.writeDynStr16(fontFamily);
+		bs.writeDynStr16(fileName);
+	} else if (ReadFontTransferFile(fileName, fontData)) {
 		bs.writeUINT8(37); // Subtype 37: Transfer and load server-side font file
 		bs.writeDynStr16(fontFamily);
 		bs.writeDynStr16(fileName);
